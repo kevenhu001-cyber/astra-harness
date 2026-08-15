@@ -27,8 +27,8 @@ func (g *Git) run(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-// runOutput runs git with an explicit output buffer and returns raw output.
-func (g *Git) runOutput(args ...string) (string, error) {
+// Output runs git with an explicit output buffer and returns raw output.
+func (g *Git) Output(args ...string) (string, error) {
 	return g.run(context.Background(), args...)
 }
 

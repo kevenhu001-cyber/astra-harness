@@ -380,7 +380,7 @@ func (e *Engine) toolGitDiff(args map[string]any) ToolResult {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
 	rel, _ := filepath.Rel(e.Root, full)
-	out, err := e.Git.runOutput("diff", "--", filepath.ToSlash(rel))
+	out, err := e.Git.Output("diff", "--", filepath.ToSlash(rel))
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
