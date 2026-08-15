@@ -508,6 +508,12 @@ func (e *Engine) recordTestClaim(success bool, command string) {
 		Source: "verify", CodeState: e.Git.StateHash(),
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
+	// Link recent evidence produced by the same command.
+	for _, ev := range e.Store.State.Evidence {
+		if strings.Contains(ev.Source, command) || ev.Metadata["command"] == command {
+			c.EvidenceIDs = append(c.EvidenceIDs, ev.ID)
+		}
+	}
 	_ = e.Store.AddClaim(c)
 	e.emit(EvClaim, c)
 }

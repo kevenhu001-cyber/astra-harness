@@ -299,32 +299,63 @@ func cmdResume(args []string) {
 }
 
 func runHeadless(args []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	yes := fs.Bool("yes", false, "auto-approve permissions")
-	permMode := fs.String("permission-mode", "", "ask|allow|deny")
-	provider := fs.String("provider", "", "provider id")
-	model := fs.String("model", "", "model name")
-	plan := fs.Bool("plan", false, "plan mode (read-only)")
-	fs.Parse(args)
-	prompt := strings.Join(fs.Args(), " ")
+	yes := false
+	plan := false
+	permMode := ""
+	provider := ""
+	model := ""
+	var promptParts []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--yes" || a == "-y":
+			yes = true
+		case a == "--plan" || a == "-p":
+			plan = true
+		case a == "--permission-mode" || a == "--permission":
+			if i+1 < len(args) {
+				i++
+				permMode = args[i]
+			}
+		case strings.HasPrefix(a, "--permission-mode="):
+			permMode = strings.TrimPrefix(a, "--permission-mode=")
+		case a == "--provider":
+			if i+1 < len(args) {
+				i++
+				provider = args[i]
+			}
+		case strings.HasPrefix(a, "--provider="):
+			provider = strings.TrimPrefix(a, "--provider=")
+		case a == "--model":
+			if i+1 < len(args) {
+				i++
+				model = args[i]
+			}
+		case strings.HasPrefix(a, "--model="):
+			model = strings.TrimPrefix(a, "--model=")
+		default:
+			promptParts = append(promptParts, a)
+		}
+	}
+	prompt := strings.Join(promptParts, " ")
 	if prompt == "" {
 		fatal("usage: astra run \"prompt\" [--yes] [--provider id] [--model name]")
 	}
 	eng, cfg := loadEngine()
 	defer eng.Store.Close()
-	if *permMode != "" {
-		eng.Perm.SetMode(*permMode)
-		cfg.PermissionMode = *permMode
+	if permMode != "" {
+		eng.Perm.SetMode(permMode)
+		cfg.PermissionMode = permMode
 	}
-	if *plan {
+	if plan {
 		eng.Perm.SetPlanMode(true)
 	}
-	if *provider != "" || *model != "" {
-		if err := eng.SwitchModel(*provider, *model); err != nil {
+	if provider != "" || model != "" {
+		if err := eng.SwitchModel(provider, model); err != nil {
 			fatal("model: %v", err)
 		}
 	}
-	if *yes {
+	if yes {
 		eng.SetPermissionPrompt(func(engine.PermissionRequest) (engine.PermissionDecision, error) {
 			return engine.PermissionDecision{Allowed: true}, nil
 		})
