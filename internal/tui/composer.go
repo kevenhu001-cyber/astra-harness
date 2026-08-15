@@ -107,14 +107,20 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		case "down":
 			c.sel = (c.sel + 1) % len(c.filtered)
 			return "", false, true
-		case "tab", "enter", "ctrl+j":
+		case "tab":
 			if len(c.filtered) > 0 {
 				c.complete(c.filtered[c.sel].Name)
-				if s == "enter" || s == "ctrl+j" {
-					// First completion, second enter submits.
+				return "", false, true
+			}
+		case "enter", "ctrl+j":
+			if len(c.filtered) > 0 {
+				target := c.filtered[c.sel].Name
+				if strings.TrimSpace(value) == target {
 					c.show = false
-					return "", false, true
+					c.ta.SetValue("")
+					return target, true, true
 				}
+				c.complete(target)
 				return "", false, true
 			}
 		case "esc":
