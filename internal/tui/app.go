@@ -756,6 +756,13 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func statusWord(ok bool) string {
+	if ok {
+		return "SUCCEEDED"
+	}
+	return "FAILED"
+}
+
 func evidenceShort(v any) string {
 	if e, ok := v.(*core.Evidence); ok {
 		return e.Kind + " · " + e.Source
