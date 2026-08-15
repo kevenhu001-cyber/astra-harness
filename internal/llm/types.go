@@ -1,7 +1,10 @@
 // Package llm provides provider-agnostic streaming access to LLM APIs.
 package llm
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Roles.
 const (
@@ -100,14 +103,35 @@ func (r *Router) Providers() []Provider {
 // Pick resolves a provider ID and optional model name.
 func (r *Router) Pick(providerID, model string) (Provider, string, error) {
 	var p Provider
-	for _, x := range r.providers {
-		if x.ID() == providerID || (providerID == "" && x.ID() == r.defaultID) {
-			p = x
-			break
+	if providerID != "" {
+		for _, x := range r.providers {
+			if x.ID() == providerID {
+				p = x
+				break
+			}
 		}
-	}
-	if p == nil && len(r.providers) > 0 {
-		p = r.providers[0]
+		if p == nil {
+			return nil, "", fmt.Errorf("unknown provider %q", providerID)
+		}
+	} else {
+		// Prefer the configured provider, then any available provider.
+		for _, x := range r.providers {
+			if (r.defaultID == "" || x.ID() == r.defaultID) && x.Available() {
+				p = x
+				break
+			}
+		}
+		if p == nil {
+			for _, x := range r.providers {
+				if x.Available() {
+					p = x
+					break
+				}
+			}
+		}
+		if p == nil && len(r.providers) > 0 {
+			p = r.providers[0]
+		}
 	}
 	if p == nil {
 		return nil, "", errNoProviders

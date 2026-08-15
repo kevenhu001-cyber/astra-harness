@@ -39,7 +39,7 @@ func main() {
 		cmdState()
 	case "claims":
 		cmdClaims()
-	case "unknowns", "unk":
+	case "unknowns", "unknown", "unk":
 		cmdUnknowns()
 	case "evidence", "ev":
 		cmdEvidence()
