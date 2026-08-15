@@ -7,7 +7,7 @@ import (
 var mdRenderer *glamour.TermRenderer
 
 func init() {
-	mdRenderer, _ = glamour.NewRenderer(
+	mdRenderer, _ = glamour.NewTermRenderer(
 		glamour.WithWordWrap(96),
 		glamour.WithStandardStyle("dark"),
 	)
@@ -29,7 +29,7 @@ func setMarkdownWidth(w int) {
 	if w < 30 {
 		w = 30
 	}
-	mdRenderer, _ = glamour.NewRenderer(
+	mdRenderer, _ = glamour.NewTermRenderer(
 		glamour.WithWordWrap(w-8),
 		glamour.WithStandardStyle("dark"),
 	)
