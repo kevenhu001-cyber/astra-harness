@@ -1,5 +1,5 @@
 .astra/
-astra
+/astra
 dist/
 coverage.out
 *.log
