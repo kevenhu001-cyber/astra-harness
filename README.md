@@ -2,6 +2,8 @@
 
 Uncertainty-Driven Software Engineering Runtime (v0.1).
 
+[![CI](https://github.com/kevenhu001-cyber/astra-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/kevenhu001-cyber/astra-harness/actions/workflows/ci.yml)
+
 Astra 不是又一个 “Chat + Edit + Run” 的 Coding Agent 外壳。它把 **Knowledge State、Claim、Evidence、Unknown、Goal、Action、Execution** 作为一等公民，运行闭环是：
 
 > Understand → Build Knowledge State → Identify Unknowns → Estimate Importance → Choose Best Action → Execute → Collect Evidence → Update Knowledge State → Verify Goal → Repeat
