@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,17 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Result,
 	if limit <= 0 {
 		limit = 20
 	}
+	results, err := ix.rgSearch(ctx, query, limit)
+	if err == nil {
+		return results, nil
+	}
+	if errorsIsRgMissing(err) {
+		return ix.fallbackSearch(ctx, query, limit)
+	}
+	return nil, err
+}
+
+func (ix *Index) rgSearch(ctx context.Context, query string, limit int) ([]Result, error) {
 	args := []string{"--line-number", "--no-heading", "--max-count", "40", "-i", "--color", "never"}
 	for _, g := range excludeGlobs() {
 		args = append(args, "-g", g)
@@ -39,6 +51,9 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Result,
 			return nil, ctx.Err()
 		}
 		if _, ok := err.(*exec.ExitError); !ok {
+			if strings.Contains(err.Error(), "executable file not found") {
+				return nil, errRgMissing
+			}
 			return nil, fmt.Errorf("rg failed: %w", err)
 		}
 		if out.Len() == 0 {
@@ -64,6 +79,57 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Result,
 		results = results[:limit]
 	}
 	return results, nil
+}
+
+// fallbackSearch walks indexed files when ripgrep is unavailable.
+func (ix *Index) fallbackSearch(ctx context.Context, query string, limit int) ([]Result, error) {
+	terms := queryTerms(query)
+	lowerQuery := strings.ToLower(query)
+	var results []Result
+	for path, entry := range ix.Files {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if entry.Size > maxIndexFileSize {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lower := strings.ToLower(string(data))
+		if !strings.Contains(lower, lowerQuery) {
+			continue
+		}
+		hit := 0
+		for _, t := range terms {
+			if strings.Contains(lower, t) {
+				hit++
+			}
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(strings.ToLower(line), lowerQuery) {
+				rel, _ := filepath.Rel(ix.Root, path)
+				score := float64(hit*2) + ix.score(path, line, terms)
+				content := strings.TrimSpace(line)
+				if len(content) > 240 {
+					content = content[:237] + "..."
+				}
+				results = append(results, Result{Path: filepath.ToSlash(rel), Line: i + 1, Content: content, Score: score})
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+var errRgMissing = fmt.Errorf("ripgrep not found")
+
+func errorsIsRgMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ripgrep not found")
 }
 
 func (ix *Index) score(path, content string, terms []string) float64 {

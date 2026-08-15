@@ -171,6 +171,7 @@ type State struct {
 	Evidence  []*Evidence `json:"evidence,omitempty"`
 	Unknowns  []*Unknown  `json:"unknowns,omitempty"`
 	Actions   []*Action   `json:"actions,omitempty"`
+	Events    []*Event    `json:"events,omitempty"`
 	UpdatedAt time.Time   `json:"updated_at"`
 }
 

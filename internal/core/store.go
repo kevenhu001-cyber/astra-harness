@@ -138,6 +138,8 @@ func (s *Store) ApplyEvent(evt Event) error {
 
 func (s *Store) apply(evt Event) error {
 	st := s.State
+	evtCopy := evt
+	st.Events = append(st.Events, &evtCopy)
 	switch evt.Type {
 	case EvtProjectInitialized:
 		var p Project

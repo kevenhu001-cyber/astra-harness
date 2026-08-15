@@ -311,6 +311,8 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		a.overlay = overlayEvidence(a.engine.Store.State)
 	case "/actions":
 		a.overlay = overlayActions(a.engine.Store.State)
+	case "/events":
+		a.overlay = overlayEvents(a.engine)
 	case "/goal":
 		if args != "" {
 			g := a.engine.SetGoal(args, nil)
@@ -650,7 +652,7 @@ func (a *app) renderAsk() string {
 	b.WriteString(styleTitle.Render("Question from agent") + "\n")
 	b.WriteString(a.pendingAsk.question + "\n")
 	b.WriteString(styleDim.Render("type an answer and press enter · esc to cancel") + "\n")
-	return styleComposer.Width(a.width - 2).Render(b.String() + "\n" + a.composer.View(a.width-4))
+	return styleComposer.Width(a.width-2).Render(b.String()) + "\n" + a.composer.View(a.width)
 }
 
 func (a *app) viewportHeight() int {

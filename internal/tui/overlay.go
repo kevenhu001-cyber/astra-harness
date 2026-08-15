@@ -150,6 +150,22 @@ func overlayActions(st *core.State) *overlay {
 	return &overlay{title: "Actions", body: b.String()}
 }
 
+func overlayEvents(e *engine.Engine) *overlay {
+	var b strings.Builder
+	events := e.Store.State.Events
+	if len(events) == 0 {
+		b.WriteString("No events in the materialized state (see .astra/events.jsonl).")
+	}
+	start := 0
+	if len(events) > 80 {
+		start = len(events) - 80
+	}
+	for _, ev := range events[start:] {
+		fmt.Fprintf(&b, "%s %s\n", ev.Timestamp.Format("15:04:05"), ev.Type)
+	}
+	return &overlay{title: "Events (materialized)", body: b.String()}
+}
+
 func overlaySessions(e *engine.Engine) *overlay {
 	sessions, _ := e.Store.ListSessions()
 	o := &overlay{title: "Sessions"}
