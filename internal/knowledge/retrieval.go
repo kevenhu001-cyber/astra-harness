@@ -70,7 +70,6 @@ func (ix *Index) score(path, content string, terms []string) float64 {
 	score := 0.0
 	rel, _ := filepath.Rel(ix.Root, path)
 	rel = filepath.ToSlash(rel)
-	lowerPath := strings.ToLower(rel)
 	lowerContent := strings.ToLower(content)
 	base := strings.ToLower(filepath.Base(rel))
 	for _, t := range terms {
