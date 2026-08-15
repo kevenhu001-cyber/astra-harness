@@ -38,6 +38,16 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build CLI binary
+        run: go build -trimpath -o astra ./cmd/astra
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-linux-amd64
+          path: astra
+          if-no-files-found: error
+
       - name: Test
         run: go test ./...
 
