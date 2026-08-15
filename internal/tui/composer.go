@@ -48,6 +48,7 @@ type composer struct {
 	focused  bool
 	history  []string
 	histIdx  int
+	plain    bool
 }
 
 func newComposer(width int) composer {
@@ -94,7 +95,9 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 	}
 	s := key.String()
 	value := c.ta.Value()
-	c.refreshSlash(value)
+	if !c.plain {
+		c.refreshSlash(value)
+	}
 
 	if c.show {
 		switch s {
@@ -159,7 +162,9 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		}
 	}
 	c.ta, _ = c.ta.Update(msg)
-	c.refreshSlash(c.ta.Value())
+	if !c.plain {
+		c.refreshSlash(c.ta.Value())
+	}
 	return "", false, false
 }
 

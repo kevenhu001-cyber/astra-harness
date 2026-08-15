@@ -216,6 +216,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.engine.AnswerAsk(a.pendingAsk.id, "[cancelled by user]")
 			a.mode = modeChat
 			a.pendingAsk = nil
+			a.composer.plain = false
 			a.composer.SetValue("")
 			a.composer.Focus()
 			a.refreshViewport()
@@ -226,6 +227,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.engine.AnswerAsk(a.pendingAsk.id, text)
 			a.mode = modeChat
 			a.pendingAsk = nil
+			a.composer.plain = false
 			a.composer.SetValue("")
 			a.composer.Focus()
 			a.refreshViewport()
@@ -520,6 +522,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			q, _ := data["question"].(string)
 			a.pendingAsk = &askState{id: id, question: q}
 			a.mode = modeAsk
+			a.composer.plain = true
 			a.composer.SetValue("")
 			a.composer.Focus()
 		}
