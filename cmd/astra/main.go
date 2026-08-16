@@ -109,15 +109,54 @@ func loadEngine() (*engine.Engine, *engine.Config) {
 	if err != nil {
 		fatal("config: %v", err)
 	}
-	eng, err := engine.NewEngine(root, cfg)
+	eng, err := engine.NewEngineWithProgress(root, cfg, indexProgressToStderr())
 	if err != nil {
 		fatal("engine: %v", err)
 	}
 	return eng, cfg
 }
 
+// indexProgressToStderr renders a simple live counter for CLI commands that
+// build or rebuild the knowledge index. It prints nothing when the index is
+// already cached (the callback is never invoked).
+func indexProgressToStderr() func(done, total int) {
+	started := false
+	reported := 0
+	return func(done, total int) {
+		if total <= 0 {
+			return
+		}
+		if !started {
+			started = true
+			fmt.Fprintln(os.Stderr, "astra: building knowledge index…")
+		}
+		if done == total {
+			fmt.Fprintf(os.Stderr, "\r  %d/%d files\n", done, total)
+			return
+		}
+		step := total / 100
+		if step < 1 {
+			step = 1
+		}
+		if done < reported+step {
+			return
+		}
+		reported = done
+		fmt.Fprintf(os.Stderr, "\r  %d/%d files    ", done, total)
+	}
+}
+
 func runTUI(prompt string) {
-	eng, cfg := loadEngine()
+	root := mustGetwd()
+	cfg, err := engine.EnsureConfig(root)
+	if err != nil {
+		fatal("config: %v", err)
+	}
+	eng, err := tui.RunStartup(root, cfg)
+	if err != nil {
+		fatal("engine: %v", err)
+	}
+	defer eng.Close()
 	if prompt != "" {
 		// Preseed: run the prompt in a goroutine once the TUI starts.
 		go func() {
@@ -125,7 +164,7 @@ func runTUI(prompt string) {
 			_ = eng.Run(context.Background(), prompt)
 		}()
 	}
-	if err := tui.Run(mustGetwd(), cfg, eng); err != nil {
+	if err := tui.Run(root, cfg, eng); err != nil {
 		fatal("tui: %v", err)
 	}
 }
@@ -146,7 +185,7 @@ func cmdInit(args []string) {
 	if err != nil {
 		fatal("config: %v", err)
 	}
-	eng, err := engine.NewEngine(root, cfg)
+	eng, err := engine.NewEngineWithProgress(root, cfg, indexProgressToStderr())
 	if err != nil {
 		fatal("engine: %v", err)
 	}
@@ -161,7 +200,7 @@ func cmdIndex(args []string) {
 	fs.Parse(args)
 	eng, _ := loadEngine()
 	defer eng.Close()
-	if err := eng.RebuildIndex(); err != nil {
+	if err := eng.RebuildIndexWithProgress(indexProgressToStderr()); err != nil {
 		fatal("index: %v", err)
 	}
 	fmt.Println(eng.Index.Stats())

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,13 @@ func NewIndex(root string) *Index {
 
 // Build scans the repository and extracts symbols.
 func (ix *Index) Build() error {
+	return ix.BuildWithProgress(nil)
+}
+
+// BuildWithProgress scans the repository and extracts symbols, reporting
+// (done, total) file counts through progress as the scan completes. total is
+// the number of files discovered before per-file symbol extraction begins.
+func (ix *Index) BuildWithProgress(progress func(done, total int)) error {
 	files, err := listFiles(ix.Root)
 	if err != nil {
 		return err
@@ -61,7 +69,11 @@ func (ix *Index) Build() error {
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var done atomic.Int64
 	sem := make(chan struct{}, 8)
+	if progress != nil {
+		progress(0, len(files))
+	}
 	for _, path := range files {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -70,15 +82,24 @@ func (ix *Index) Build() error {
 			defer func() { <-sem }()
 			entry, err := indexFile(p)
 			if err != nil {
+				if progress != nil {
+					progress(int(done.Add(1)), len(files))
+				}
 				return
 			}
 			mu.Lock()
 			ix.Files[p] = entry
 			ix.Languages[langName(entry.Extension)]++
 			mu.Unlock()
+			if progress != nil {
+				progress(int(done.Add(1)), len(files))
+			}
 		}(path)
 	}
 	wg.Wait()
+	if progress != nil {
+		progress(len(files), len(files))
+	}
 	ix.BuiltAt = time.Now().UTC()
 	return nil
 }

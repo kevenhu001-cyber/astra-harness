@@ -80,6 +80,12 @@ type Engine struct {
 
 // NewEngine wires store, index, router and permissions for a workspace.
 func NewEngine(root string, cfg *Config) (*Engine, error) {
+	return NewEngineWithProgress(root, cfg, nil)
+}
+
+// NewEngineWithProgress is NewEngine with an optional index progress callback
+// (done, total files) invoked while the first knowledge index is built.
+func NewEngineWithProgress(root string, cfg *Config, progress func(done, total int)) (*Engine, error) {
 	st, err := core.NewStore(root)
 	if err != nil {
 		return nil, err
@@ -89,7 +95,7 @@ func NewEngine(root string, cfg *Config) (*Engine, error) {
 	if loaded, err := knowledge.LoadIndex(root); err == nil {
 		ix = loaded
 	} else {
-		if err := ix.Build(); err != nil {
+		if err := ix.BuildWithProgress(progress); err != nil {
 			return nil, err
 		}
 		if err := ix.Save(); err != nil {
@@ -129,7 +135,6 @@ func (e *Engine) Close() error {
 	}
 	return nil
 }
-
 
 // startMcpServers spawns configured stdio MCP servers and records their tools.
 // A failing or unresponsive server is reported as a system event but does not
@@ -355,7 +360,7 @@ func (e *Engine) Stop() {
 type retryableError struct{ err error }
 
 func (e retryableError) Error() string { return e.err.Error() }
-func (e retryableError) Unwrap() error  { return e.err }
+func (e retryableError) Unwrap() error { return e.err }
 
 // isRetryable reports whether a model-call failure can be retried with
 // backoff (Codex: util::backoff). Deterministic failures (bad requests,
@@ -1106,8 +1111,13 @@ func (e *Engine) StateDir() string {
 
 // RebuildIndex re-scans the repository.
 func (e *Engine) RebuildIndex() error {
+	return e.RebuildIndexWithProgress(nil)
+}
+
+// RebuildIndexWithProgress is RebuildIndex with an optional progress callback.
+func (e *Engine) RebuildIndexWithProgress(progress func(done, total int)) error {
 	ix := knowledge.NewIndex(e.Root)
-	if err := ix.Build(); err != nil {
+	if err := ix.BuildWithProgress(progress); err != nil {
 		return err
 	}
 	if err := ix.Save(); err != nil {
