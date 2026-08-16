@@ -13,10 +13,33 @@ Agent 是可替换、可销毁的计算资源；持久化的系统智能存在�
 ## 功能
 
 - **TUI**：对标 Claude Code / Codex CLI / OpenCode 的交互体验
-  - 流式 Markdown 渲染、工具调用卡片、权限弹层、Agent 提问弹层
-  - 斜杠命令补全与模糊匹配：`/status /claims /unknowns /evidence /goal /model /verify /plan /diff /sessions` 等
-  - 状态栏实时显示 Provider/Model、模式、分支、Claim/Unknown/Evidence 计数、Token 用量
-  - 键盘：`enter` 发送，`alt+enter` 换行，`ctrl+c` 停止/退出，`ctrl+u/d` 滚动，`x` 展开工具输出
+  - 三个区域：标题栏（品牌、provider/model、模式、branch、goal progress）、聊天主区、可切换的侧边栏（Ctrl+B）
+    - 侧边栏四种模式（j/k 导航，tab/m 切换）：Sessions · Files · Knowledge · Activity
+    - 点击/回车在侧边栏直接打开 claim/unknown/file overlay
+  - 流式 Markdown 渲染：glamour + chroma 语法高亮（go/python/rs/ts/json/yaml/toml/md/diff 等）
+  - 工具调用卡片：edit_file/write_file 自动识别为 unified diff，红绿着色，文件夹上下文清晰
+  - 权限弹层：`y/a/n/N/esc` 会话级「always 允许/拒绝」
+  - Agent 提问弹层：纯文本回答模式（plain composer）
+  - 斜杠命令补全：分类展示（Session / Knowledge / Model / Safety / Build / Files / Help），含快捷键提示
+  - `/`、`@`、`!` 三种快捷输入：
+    - `/` 进入命令面板
+    - `@` 进入文件补全（基于知识索引）
+    - `!` 进入 shell 模式（本地 30s 超时，保留环境变量）
+  - ⌘K 命令面板：模糊匹配，键盘导航，分组着色
+  - 状态栏实时显示：Provider/Model、权限模式、branch、Goal 进度、Claim/Unknown/Evidence 计数、Token 用量与累计 USD 成本
+  - 键盘：`enter` 发送，`alt+enter` 换行，`ctrl+c` 停止/退出，`ctrl+u/d` 滚动，`x`/`ctrl+o` 折叠工具输出，`?`/`F1` 帮助，`ctrl+b` 侧边栏，`ctrl+k` 调色板，`ctrl+l` 清屏，`ctrl+t` 新会话，`ctrl+↑/↓` 历史，`/undo` 撤回一轮
+
+- **Slash 命令全集**（按类别）
+
+  | 类别 | 命令 |
+  | --- | --- |
+  | Session | `/help /status /goal /claims /unknowns /evidence /actions /events /sessions /resume /export /clear /new /quit` |
+  | Knowledge | `/tree` 项目文件树 |
+  | Build | `/init /index /verify /commit /branch /diff` |
+  | Model | `/model /provider /cost` |
+  | Safety | `/permissions /plan /undo` |
+  | Files | `/add-file` 直接预览文件 |
+  | Help | `/theme /paste /mcp /agents /tasks /debug`
 - **State Core**：`.astra/` 下的 Event Sourcing（`events.jsonl`）+ 物化状态（`state.json`），可回放、可恢复
 - **Knowledge Engine**：文件/符号/测试索引（Go、Rust、Python、TS/JS、Java、Kotlin、C/C++、C#、PHP、Ruby），ripgrep 检索 + 符号匹配排序
 - **Uncertainty Engine**：`priority = impact × uncertainty × dependency_weight ÷ resolution_cost`

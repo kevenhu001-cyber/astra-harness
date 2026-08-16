@@ -1,0 +1,113 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/kevenhu001-cyber/astra-harness/internal/engine"
+	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
+)
+
+// helper: build a tiny app with a mock-like engine config (no providers).
+func newTestApp(t *testing.T) *app {
+	t.Helper()
+	root := t.TempDir()
+	cfg := &engine.Config{
+		Providers: []engine.ProviderConfig{
+			{
+				ID:        "test",
+				Type:      "openai-compatible",
+				Name:      "TestProvider",
+				BaseURL:   "https://example.invalid/v1",
+				APIKeyEnv: "TEST_API_KEY",
+				Models:    []string{"test-model"},
+			},
+		},
+		DefaultProvider: "test",
+		DefaultModel:    "test-model",
+		PermissionMode:  "ask",
+		MaxIterations:   1,
+		TimeoutSeconds:  10,
+	}
+	t.Setenv("TEST_API_KEY", "stub")
+	eng, err := engine.NewEngine(root, cfg)
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Store.Close() })
+	return NewApp(root, cfg, eng)
+}
+
+func TestAppRender(t *testing.T) {
+	a := newTestApp(t)
+	a.composer.SetWidth(80)
+	_, _ = a.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	a.refreshFileCandidates()
+	a.refreshViewport()
+	out := a.View()
+	if !strings.Contains(out, "Astra") {
+		t.Fatalf("missing brand in view:\n%s", out)
+	}
+}
+
+func TestOverlayHelpCyclesTabs(t *testing.T) {
+	a := newTestApp(t)
+	a.overlay = overlayHelp()
+	if a.overlay == nil || len(a.overlay.tabs) == 0 {
+		t.Fatal("help overlay empty tabs")
+	}
+	// Press right-arrow twice to move tab index.
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyRight})
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if a.overlay.tab < 1 {
+		t.Fatalf("tab not advancing: %d", a.overlay.tab)
+	}
+}
+
+func TestCostEstimate(t *testing.T) {
+	u := approximateCost("claude-sonnet-4-20250514", llm.Usage{InputTokens: 1_000_000, OutputTokens: 0})
+	if u < 2.9 || u > 3.1 {
+		t.Fatalf("cost out of expected window: %f", u)
+	}
+}
+
+func TestDiffRenderer(t *testing.T) {
+	body := "--- a/foo.go\n+++ b/foo.go\n@@ -1,2 +1,2 @@\n-old\n+new\n"
+	r := renderDiff(body, "foo.go")
+	if !strings.Contains(r, "+new") || !strings.Contains(r, "-old") {
+		t.Fatalf("diff missing lines:\n%s", r)
+	}
+}
+
+func TestSlashFilter(t *testing.T) {
+	c := newComposer(80)
+	c.ta.SetValue("/mo")
+	c.refresh()
+	if len(c.filtered) == 0 {
+		t.Fatal("expected slash suggestions")
+	}
+}
+
+func TestBashModeToggle(t *testing.T) {
+	c := newComposer(80)
+	c.EnterBash()
+	if !c.IsBash() {
+		t.Fatal("bash mode did not engage")
+	}
+	c.bashLine = "ls -la"
+	c.ExitBash()
+	if c.IsBash() {
+		t.Fatal("bash mode did not exit")
+	}
+}
+
+func TestPaletteFuzzy(t *testing.T) {
+	p := palette{filtered: builtinPaletteEntries()}
+	p.input = "ses"
+	p.refilter()
+	if len(p.filtered) == 0 {
+		t.Fatal("palette did not match 'ses'")
+	}
+}

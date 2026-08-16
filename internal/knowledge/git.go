@@ -54,6 +54,50 @@ func (g *Git) Branch() string {
 	return b
 }
 
+// BranchOr returns the current branch name, falling back to "(detached)" or
+// a short sha when HEAD does not point at a branch ref.
+func (g *Git) BranchOr(fallback string) string {
+	b := g.Branch()
+	if b == "" || b == "HEAD" {
+		if fallback != "" {
+			return fallback
+		}
+		return g.Head()
+	}
+	return b
+}
+
+// Commit creates a commit with the given message, staging all changes.
+func (g *Git) Commit(message string) (string, error) {
+	if _, err := g.run(context.Background(), "add", "-A"); err != nil {
+		return "", err
+	}
+	out, err := g.run(context.Background(), "commit", "-m", message)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// SwitchBranch switches to or creates the named branch.
+func (g *Git) SwitchBranch(name string) (string, error) {
+	if !strings.ContainsAny(name, "/") && !strings.Contains(name, "_") && name != "" {
+		// try checkout -b only if the branch doesn't already exist
+		if _, err := g.run(context.Background(), "rev-parse", "--verify", "refs/heads/"+name); err != nil {
+			out, cerr := g.run(context.Background(), "checkout", "-b", name)
+			if cerr != nil {
+				return "", cerr
+			}
+			return out, nil
+		}
+	}
+	out, err := g.run(context.Background(), "checkout", name)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 func (g *Git) Head() string {
 	h, _ := g.run(context.Background(), "rev-parse", "--short", "HEAD")
 	return h

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /tmp && cp /home/ubuntu/.paseo/uploads/upload_c23d9958-7d22-425f-85e6-f7583cf10d4e/Astra_Harness________v0.1.docx astra.docx && unzip -o astra.docx -d astra_docx/ | tail -5 && ls astra_docx/word/)"
+    ]
+  }
+}
