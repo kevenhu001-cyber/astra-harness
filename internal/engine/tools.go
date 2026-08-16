@@ -578,9 +578,8 @@ func (e *Engine) runShell(ctx context.Context, command, desc string, timeout tim
 		runCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
+	cmd := shellCommand(runCtx, command)
 	cmd.Dir = e.Root
-	cmd.Env = os.Environ()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}

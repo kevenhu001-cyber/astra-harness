@@ -30,13 +30,16 @@ const (
 )
 
 type chatItem struct {
-	kind      string // user | assistant | tool | system | error | evidence | unknown | claim | bash
+	kind      string // user | assistant | tool | system | error | evidence | unknown | claim | bash | sep
 	meta      string
+	args      string // tool call arguments (JSON)
 	raw       string
 	rendered  string
 	status    string
 	collapsed bool
 	duration  time.Duration
+	exitCode  string
+	started   time.Time
 }
 
 type streamingMsg struct {
@@ -125,6 +128,7 @@ type app struct {
 	escArmedAt          time.Time
 	keymapCaptureAction string
 	atBottom            bool
+	toolWorkThisTurn    bool
 	userEmail           string
 	deviceFlow          *auth.DeviceFlow
 	loginOverlay        *loginOverlay
@@ -149,7 +153,10 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 		a.userEmail = cred.User.Email
 	}
 	a.vp = viewport.New(80, 24)
-	a.vp.Style = lipgloss.NewStyle().Padding(0, 1)
+	// Codex renders history edge-to-edge: gutters are part of each cell
+	// (e.g. "• ", "› ", "  └ "), so the viewport must not add its own
+	// horizontal padding or long cells wrap one column early.
+	a.vp.Style = lipgloss.NewStyle()
 	a.composer = newComposer(80)
 	a.composer.historySearchKey = eng.KeymapBinding("history_search")
 	a.composer.newlineKey = eng.KeymapBinding("newline")
@@ -743,6 +750,7 @@ func (a *app) startAgent(prompt string) tea.Cmd {
 	a.busyAt = time.Now()
 	a.status = "starting agent..."
 	a.streaming = nil
+	a.toolWorkThisTurn = false
 	a.refreshViewport()
 	return func() tea.Msg {
 		_ = a.engine.Run(context.Background(), prompt)
@@ -1198,13 +1206,22 @@ func (a *app) exportTranscript() string {
 		case "assistant":
 			fmt.Fprintf(&b, "## Astra\n\n%s\n\n", it.raw)
 		case "tool":
-			fmt.Fprintf(&b, "### Tool: %s (%s)\n\n```\n%s\n```\n\n", it.meta, it.status, it.raw)
+			if isShellTool(it.meta) {
+				b.WriteString(stripANSI(codexTranscriptCell(
+					codexToolLabel(it.meta, it.args), it.raw,
+					it.status == "SUCCEEDED", it.exitCode, it.duration)))
+				b.WriteString("\n\n")
+			} else {
+				fmt.Fprintf(&b, "### Tool: %s (%s)\n\n```\n%s\n```\n\n", it.meta, it.status, it.raw)
+			}
 		case "system":
 			fmt.Fprintf(&b, "_%s_\n\n", it.raw)
 		case "bash":
 			fmt.Fprintf(&b, "### $ %s\n\n```\n%s\n```\n\n", it.meta, it.raw)
 		case "evidence", "unknown", "claim":
 			fmt.Fprintf(&b, "_%s_: %s\n\n", it.kind, it.raw)
+		case "sep":
+			// visual divider — skip in transcript export
 		}
 	}
 	_ = os.WriteFile(path, []byte(b.String()), 0o644)
@@ -1224,6 +1241,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		}
 	case engine.EvAssistantStart:
 		a.streaming = &streamingMsg{start: time.Now()}
+		a.toolWorkThisTurn = false
 		a.status = "agent thinking..."
 	case engine.EvAssistantEnd:
 		if a.streaming != nil {
@@ -1236,6 +1254,19 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 				duration: dur,
 			})
 			a.streaming = nil
+			// Codex FinalMessageSeparator: a dim rule after turns that
+			// performed tool work, labeled with the worked-for time when it
+			// is meaningful (>= 1 minute, matching Codex).
+			if a.toolWorkThisTurn {
+				label := ""
+				if dur >= time.Minute {
+					label = "Worked for " + fmtDurCompact(dur)
+				}
+				a.items = append(a.items, &chatItem{
+					kind:     "sep",
+					rendered: codexSeparator(label, a.widthAvail()-2),
+				})
+			}
 		}
 		a.turns++
 		a.status = "ready"
@@ -1243,8 +1274,9 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		data, _ := ev.Data.(map[string]any)
 		name, _ := data["name"].(string)
 		args, _ := data["arguments"].(string)
-		it := &chatItem{kind: "tool", meta: name, status: "running", raw: args}
+		it := &chatItem{kind: "tool", meta: name, args: args, status: "running", started: time.Now()}
 		a.items = append(a.items, it)
+		a.toolWorkThisTurn = true
 		a.status = "tool: " + name
 	case engine.EvToolStream:
 		// Append live output to the most recent running tool card so partial
@@ -1265,11 +1297,19 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		name, _ := data["name"].(string)
 		success, _ := data["success"].(bool)
 		output, _ := data["output"].(string)
+		exitCode := ""
+		if md, ok := data["metadata"].(map[string]any); ok {
+			if ec, ok := md["exit_code"].(string); ok {
+				exitCode = ec
+			}
+		}
 		// Find the most recent tool-start and update it.
 		for i := len(a.items) - 1; i >= 0; i-- {
 			if a.items[i].kind == "tool" && a.items[i].meta == name && a.items[i].status == "running" {
 				a.items[i].status = statusWord(success)
 				a.items[i].raw = output
+				a.items[i].exitCode = exitCode
+				a.items[i].duration = time.Since(a.items[i].started)
 				a.items[i].rendered = a.renderTool(name, success, output)
 				break
 			}
@@ -1575,7 +1615,7 @@ func (a *app) renderPermission() string {
 	}
 	b.WriteString(styleDim.Render(req.Risk) + "\n")
 	b.WriteString(styleKey.Render("y") + " allow · " + styleKey.Render("a") + " always · " + styleKey.Render("n") + " deny · " + styleKey.Render("N") + " always deny · " + styleKey.Render("esc") + " deny once")
-	return styleComposer.Width(a.width - 2).Render(b.String())
+	return stylePanel.Width(a.width - 2).Render(b.String())
 }
 
 func (a *app) renderAsk() string {
@@ -1586,7 +1626,7 @@ func (a *app) renderAsk() string {
 	b.WriteString(styleTitle.Render("❓ Question from agent") + "\n")
 	b.WriteString(a.pendingAsk.question + "\n")
 	b.WriteString(styleDim.Render("type an answer and press enter · esc to cancel") + "\n")
-	return styleComposer.Width(a.width-2).Render(b.String()) + "\n" + a.composer.View(a.width)
+	return stylePanel.Width(a.width-2).Render(b.String()) + "\n" + a.composer.View(a.width)
 }
 
 func (a *app) viewportHeight() int {
@@ -1623,6 +1663,8 @@ func (a *app) renderItem(it *chatItem) string {
 	switch it.kind {
 	case "user":
 		return a.renderUser(it.raw)
+	case "assistant":
+		return a.renderAssistant(it.raw, it.duration)
 	case "tool":
 		return a.renderTool(it.meta, it.status == "SUCCEEDED", it.raw)
 	case "system":
@@ -1632,76 +1674,126 @@ func (a *app) renderItem(it *chatItem) string {
 	case "evidence", "unknown", "claim":
 		return chip(it.kind, it.kind) + " " + styleDim.Render(it.raw)
 	case "bash":
-		return styleToolBox.Width(a.width - 4).Render(
-			styleKey.Render("$") + " " + styleTitle.Render(it.meta) + "\n\n" +
-				renderDiff(it.raw, ""))
+		return a.renderBash(it.meta, it.raw, it.status == "SUCCEEDED", it.exitCode, it.duration)
+	case "sep":
+		return it.rendered
 	default:
 		return it.raw
 	}
 }
 
+// renderUser renders a user message the way Codex does: plain text on a
+// subtle background tint (user_message_style), with a bold-dim "› " prefix on
+// the first line, a 2-column continuation gutter, and no decorative border.
 func (a *app) renderUser(text string) string {
-	inner := styleBody.Width(max(30, a.width-12)).Render(text)
-	return styleUserBox.Width(a.width - 4).Render(
-		chip("user", "You") + "\n\n" + inner)
-}
-
-func (a *app) renderAssistant(md string, dur time.Duration) string {
-	body := renderMarkdown(md)
-	headerRight := styleDim.Render(fmt.Sprintf("· %s · %s", a.engine.Model, dur.Truncate(time.Millisecond)))
-	title := styleTitle.Render("◆ Astra") + "  " + headerRight
-	if body == "" {
-		body = styleDim.Render("…")
-	}
-	return styleAssistantBox.Width(a.width - 4).Render(title + "\n\n" + body)
-}
-
-// renderToolStreaming renders a tool card that is still producing output.
-func (a *app) renderToolStreaming(name, output string) string {
-	body := output
-	if len(body) > 4000 {
-		body = body[:4000] + "\n…"
-	}
-	title := styleKey.Render("⌘ "+name) + "  " + styleWarn.Render("RUNNING…")
-	return styleToolBoxRunning.Width(a.width - 4).Render(title + "\n\n" + lipgloss.NewStyle().Width(a.width-8).Render(body))
-}
-
-func (a *app) renderTool(name string, success bool, output string) string {
-	statusColor := styleError
-	statusText := "FAILED"
-	boxStyle := styleToolBoxErr
-	if success {
-		statusColor = styleOk
-		statusText = "OK"
-		boxStyle = styleToolBoxOK
-	} else {
-		boxStyle = styleToolBox
-	}
-	var body string
-	// Detect if this is a structured tool output (diff) or plain output.
-	if fname, diff, ok := detectDiff(output); ok {
-		body = renderDiff(diff, fname)
-	} else if name == "read" || name == "edit_file" || name == "write_file" {
-		body = output
-	} else {
-		body = output
-	}
-	if a.findLastToolItem().collapsed {
-		body = styleDim.Render("(collapsed — press x or ⌘O to expand)")
-	} else if len(body) > 4000 {
-		body = body[:4000] + "\n…" + styleDim.Render(fmt.Sprintf(" (+%d chars — x to collapse)", len(body)-4000))
-	}
-	title := styleKey.Render("⌘ "+name) + " " + statusColor.Render(statusText)
-	return boxStyle.Width(a.width - 4).Render(title + "\n\n" + lipgloss.NewStyle().Width(a.width-8).Render(body))
-}
-
-func (a *app) findLastToolItem() *chatItem {
-	for i := len(a.items) - 1; i >= 0; i-- {
-		if a.items[i].kind == "tool" {
-			return a.items[i]
+	w := max(30, a.widthAvail()-2)
+	lines := wrapWords(text, max(30, w-2))
+	var b strings.Builder
+	b.WriteString(styleUserMsg.Width(w).Render(""))
+	b.WriteString("\n")
+	for i, l := range lines {
+		if i == 0 {
+			b.WriteString(styleUserMsg.Width(w).Render(styleUserPre.Render("› ") + styleBody.Render(l)))
+		} else {
+			b.WriteString(styleUserMsg.Width(w).Render("  " + styleBody.Render(l)))
+		}
+		if i < len(lines)-1 {
+			b.WriteString("\n")
 		}
 	}
-	return nil
+	b.WriteString("\n")
+	b.WriteString(styleUserMsg.Width(w).Render(""))
+	return b.String()
+}
+
+// renderAssistant renders assistant markdown with no surrounding box,
+// matching Codex's plain rich-markdown history cells: the first rendered line
+// carries a dim "• " bullet and every following line is gutter-indented.
+func (a *app) renderAssistant(md string, dur time.Duration) string {
+	body := renderMarkdown(md)
+	if body == "" {
+		return styleBullet.Render(codexBullet) + " " + styleDim.Render("…")
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	var b strings.Builder
+	for i, l := range lines {
+		// Codex normalizes whitespace-only rows (e.g. the empty line between
+		// markdown blocks) so the gutter stays clean instead of a row of spaces.
+		if strings.TrimSpace(l) == "" {
+			l = ""
+		} else {
+			l = strings.TrimRight(l, " ")
+		}
+		if i == 0 {
+			b.WriteString(styleBullet.Render(codexBullet+" ") + l)
+		} else {
+			b.WriteString("  " + l)
+		}
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// renderToolStreaming renders a tool cell that is still producing output,
+// Codex-style:
+//
+//	• Running cargo build
+//	  └ Compiling foo...
+func (a *app) renderToolStreaming(name, output string) string {
+	// The item for this live cell holds the tool args (needed for the
+	// header label); find the most recent running cell for this tool.
+	var args string
+	for i := len(a.items) - 1; i >= 0; i-- {
+		if a.items[i].kind == "tool" && a.items[i].meta == name && a.items[i].status == "running" {
+			args = a.items[i].args
+			break
+		}
+	}
+	if output == "" {
+		output = "…"
+	}
+	return codexExecCell(a.widthAvail()-2, true, false, name, args, output, toolMaxLines)
+}
+
+// renderTool renders a committed tool call as a Codex history cell:
+//
+//   - Ran go test ./...          ← run_command / run_tests / run_build
+//     └ ok  github.com/x 3.4s
+//
+//   - Called search({"q":"x"})   ← non-shell tools
+//     └ 3 results
+func (a *app) renderTool(name string, success bool, output string) string {
+	collapsed := false
+	for i := len(a.items) - 1; i >= 0; i-- {
+		if a.items[i].kind == "tool" && a.items[i].status != "running" {
+			collapsed = a.items[i].collapsed
+			break
+		}
+	}
+	if collapsed {
+		return styleToolBox.Width(a.widthAvail() - 2).Render(
+			styleDim.Render("(collapsed — press x or ⌘O to expand)"))
+	}
+	// Find the matching item for the tool arguments used in the header label.
+	args := ""
+	for i := len(a.items) - 1; i >= 0; i-- {
+		if a.items[i].kind == "tool" && a.items[i].meta == name {
+			args = a.items[i].args
+			break
+		}
+	}
+	return codexExecCell(a.widthAvail()-2, false, success, name, args, output, toolMaxLines)
+}
+
+// renderBash renders the user shell (bang mode) result, Codex-style:
+//
+//   - You ran ls
+//     └ file1
+//     file2
+func (a *app) renderBash(cmd, output string, ok bool, exitCode string, dur time.Duration) string {
+	return codexUserShellCell(cmd, output, a.widthAvail()-2)
 }
 
 func (a *app) addSystem(text string) {

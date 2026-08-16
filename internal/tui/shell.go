@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 )
 
@@ -16,7 +17,12 @@ func newShellCommand(ctx context.Context, dir, command string) *exec.Cmd {
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		_ = cancel
 	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	return cmd

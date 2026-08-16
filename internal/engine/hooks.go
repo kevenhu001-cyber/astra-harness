@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -72,9 +70,8 @@ func (e *Engine) runHookCommand(h HookConfig, payload any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", h.Command)
+	cmd := shellCommand(ctx, h.Command)
 	cmd.Dir = e.Root
-	cmd.Env = os.Environ()
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {

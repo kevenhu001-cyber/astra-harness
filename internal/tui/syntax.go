@@ -11,24 +11,24 @@ import (
 // chromaStyle picks a chroma style tuned for our terminal.
 func chromaStyle() *chroma.Style {
 	if s := chroma.MustNewStyle("astra-dark", chroma.StyleEntries{
-		chroma.Comment:           "60 #7f7f9f italic",
-		chroma.CommentPreproc:    "60 #7f7f9f italic",
-		chroma.Keyword:           "141 #ff79c6 bold",
-		chroma.KeywordConstant:   "141 #ff79c6",
-		chroma.KeywordDeclaration: "141 #ff79c6",
-		chroma.KeywordType:       "141 #bd93f9",
-		chroma.Name:              "111 #8be9fd",
-		chroma.NameClass:         "111 #8be9fd",
-		chroma.NameFunction:      "215 #ffb86c",
-		chroma.NameVariable:      "252 #f8f8f2",
-		chroma.NameBuiltin:       "215 #ffb86c",
-		chroma.LiteralString:     "223 #f1fa8c",
-		chroma.LiteralNumber:     "209 #ff9580",
-		chroma.Operator:          "141 #ff79c6",
-		chroma.Punctuation:       "245 #a0a0b5",
-		chroma.Error:             "203 #ff5555",
-		chroma.Text:              "252 #f8f8f2",
-		chroma.Background:        "bg #15151f",
+		chroma.Comment:            "#7f7f9f italic",
+		chroma.CommentPreproc:     "#7f7f9f italic",
+		chroma.Keyword:            "#ff79c6 bold",
+		chroma.KeywordConstant:    "#ff79c6",
+		chroma.KeywordDeclaration: "#ff79c6",
+		chroma.KeywordType:        "#bd93f9",
+		chroma.Name:               "#8be9fd",
+		chroma.NameClass:          "#8be9fd",
+		chroma.NameFunction:       "#ffb86c",
+		chroma.NameVariable:       "#f8f8f2",
+		chroma.NameBuiltin:        "#ffb86c",
+		chroma.LiteralString:      "#f1fa8c",
+		chroma.LiteralNumber:      "#ff9580",
+		chroma.Operator:           "#ff79c6",
+		chroma.Punctuation:        "#a0a0b5",
+		chroma.Error:              "#ff5555",
+		chroma.Text:               "#f8f8f2",
+		chroma.Background:         "bg:#15151f",
 	}); s != nil {
 		return s
 	}
@@ -58,8 +58,9 @@ func highlightCode(src, lang, filename string) string {
 	}
 	lexer = chroma.Coalesce(lexer)
 	style := chromaStyle()
-	opts := &chroma.TokeniseOptions{}
-	it, err := lexer.Tokenise(opts, src)
+	// Passing a non-nil empty TokeniseOptions overrides chroma's default
+	// "root" start state and makes every lexer panic with "unknown state".
+	it, err := lexer.Tokenise(nil, src)
 	if err != nil {
 		return src
 	}

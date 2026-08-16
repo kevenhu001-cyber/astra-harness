@@ -2,12 +2,53 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
+
+// hookDenyCommand prints text to stderr and exits non-zero on both shells.
+func hookDenyCommand(text string) string {
+	if runtime.GOOS == "windows" {
+		return "echo " + text + " 1>&2 && exit /b 1"
+	}
+	return "echo '" + text + "' 1>&2 && exit 1"
+}
+
+// hookEchoExit prints text then exits non-zero on both shells.
+func hookEchoExit(text string) string {
+	if runtime.GOOS == "windows" {
+		return "echo " + text + " && exit /b 1"
+	}
+	return "echo '" + text + "' && exit 1"
+}
+
+// hookCaptureStdin returns a shell command that writes stdin to path.
+func hookCaptureStdin(path string) string {
+	if runtime.GOOS == "windows" {
+		// -EncodedCommand avoids cmd/PowerShell argument parsing eating the
+		// "$" variables; the script reads the full stdin stream (including a
+		// payload without a trailing newline) and writes exact bytes.
+		script := "$p='" + path + "'; [IO.File]::WriteAllText($p, [Console]::In.ReadToEnd())"
+		var raw []byte
+		for _, u := range utf16.Encode([]rune(script)) {
+			raw = append(raw, byte(u), byte(u>>8))
+		}
+		encoded := base64.StdEncoding.EncodeToString(raw)
+		return "powershell -NoProfile -NonInteractive -EncodedCommand " + encoded
+	}
+	return "cat > " + quoteShell(path)
+}
+
+// hookNoop returns a command that succeeds on both shells.
+func hookNoop() string {
+	return "cd ."
+}
 
 func newTestEngineWithHooks(t *testing.T, root string, hooks []HookConfig) *Engine {
 	t.Helper()
@@ -34,7 +75,7 @@ func newTestEngineWithHooks(t *testing.T, root string, hooks []HookConfig) *Engi
 // tool call and surfaces the hook output as the reason.
 func TestHookPreToolUseDenies(t *testing.T) {
 	eng := newTestEngineWithHooks(t, t.TempDir(), []HookConfig{{
-		Event: "PreToolUse", Command: "cat > /dev/null && echo 'no run_command for you' >&2 && exit 1",
+		Event: "PreToolUse", Command: hookDenyCommand("no run_command for you"),
 	}})
 	res := eng.ExecuteTool(context.Background(), "run_command", `{"command":"echo hi"}`)
 	if res.Success {
@@ -48,7 +89,7 @@ func TestHookPreToolUseDenies(t *testing.T) {
 // TestHookPreToolUseAllows verifies exit 0 lets the call through.
 func TestHookPreToolUseAllows(t *testing.T) {
 	eng := newTestEngineWithHooks(t, t.TempDir(), []HookConfig{{
-		Event: "PreToolUse", Command: "cat > /dev/null",
+		Event: "PreToolUse", Command: hookNoop(),
 	}})
 	res := eng.ExecuteTool(context.Background(), "run_command", `{"command":"echo hi"}`)
 	if !res.Success {
@@ -89,7 +130,7 @@ func TestHookPostToolUseReceivesPayload(t *testing.T) {
 	// Use printf to write stdin to the file; the hook itself always succeeds.
 	eng := newTestEngineWithHooks(t, root, []HookConfig{{
 		Event:   "PostToolUse",
-		Command: "cat > " + quoteShell(out),
+		Command: hookCaptureStdin(out),
 	}})
 	res := eng.ExecuteTool(context.Background(), "run_command", `{"command":"echo hello"}`)
 	if !res.Success {
@@ -115,7 +156,7 @@ func TestHookPostToolUseReceivesPayload(t *testing.T) {
 // TestHookPreCompactBlocks verifies PreCompact can abort compaction.
 func TestHookPreCompactBlocks(t *testing.T) {
 	eng := newTestEngineWithHooks(t, t.TempDir(), []HookConfig{{
-		Event: "PreCompact", Command: "echo 'do not compact' && exit 1",
+		Event: "PreCompact", Command: hookEchoExit("do not compact"),
 	}})
 	eng.addMessage("user", "seed one")
 	eng.addMessage("assistant", "seed two")

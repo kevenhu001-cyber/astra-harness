@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,7 +138,9 @@ func TestUpdateProviderPersistsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows does not enforce POSIX permission bits; the mode assertion is
+	// only meaningful on Unix-like systems.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config with api key should be 0600, got %v", info.Mode().Perm())
 	}
 }

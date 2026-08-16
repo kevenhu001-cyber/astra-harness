@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
 )
 
 var mdRenderer *glamour.TermRenderer
@@ -28,8 +29,60 @@ var mdCache sync.Map // map[string]string keyed by src+":"+width
 func init() {
 	mdRenderer, _ = glamour.NewTermRenderer(
 		glamour.WithWordWrap(96),
-		glamour.WithStandardStyle("dark"),
+		glamour.WithStyles(codexMarkdownStyle()),
 	)
+}
+
+// codexMarkdownStyle returns the glamour style configuration that mirrors the
+// markdown rendering in codex-rs/tui (markdown_render.rs):
+//
+//	h1  bold underlined        h2  bold                h3  bold italic
+//	h4-6 italic                code cyan               link cyan underlined
+//	blockquote green with "> " ordered markers light blue
+//	no decorative code-block box, no "#" heading prefixes
+func codexMarkdownStyle() ansi.StyleConfig {
+	str := func(s string) *string { return &s }
+	on := func(v bool) *bool { return &v }
+	cyan, green, lightBlue := str("36"), str("32"), str("94")
+	italic := ansi.StylePrimitive{Italic: on(true)}
+	return ansi.StyleConfig{
+		Document: ansi.StyleBlock{},
+		Heading: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Bold:        on(true),
+				BlockSuffix: "\n",
+			},
+		},
+		H1: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
+			Bold: on(true), Underline: on(true),
+		}},
+		H2: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Bold: on(true)}},
+		H3: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
+			Bold: on(true), Italic: on(true),
+		}},
+		H4:            ansi.StyleBlock{StylePrimitive: italic},
+		H5:            ansi.StyleBlock{StylePrimitive: italic},
+		H6:            ansi.StyleBlock{StylePrimitive: italic},
+		Emph:          italic,
+		Strong:        ansi.StylePrimitive{Bold: on(true)},
+		Strikethrough: ansi.StylePrimitive{CrossedOut: on(true)},
+		Code:          ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: cyan}},
+		CodeBlock: ansi.StyleCodeBlock{
+			StyleBlock: ansi.StyleBlock{},
+			Chroma:     &ansi.Chroma{},
+		},
+		Link:     ansi.StylePrimitive{Color: cyan, Underline: on(true)},
+		LinkText: ansi.StylePrimitive{},
+		BlockQuote: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
+			Color:  green,
+			Prefix: "> ",
+		}},
+		Enumeration: ansi.StylePrimitive{Color: lightBlue},
+		HorizontalRule: ansi.StylePrimitive{
+			Color:  str("240"),
+			Format: "\n———\n",
+		},
+	}
 }
 
 // renderMarkdown converts markdown to ANSI text for the viewport. Fenced code
@@ -60,8 +113,14 @@ func renderMarkdownFresh(src string) string {
 		body := sub[2]
 		highlighted := highlightCode(stripANSI(body), lang, "")
 		counter++
-		key := "__ASTRA_CODE_" + itoa(counter) + "__"
-		boxed := styleCodeBlock.Render(highlighted)
+		// The placeholder must be free of markdown punctuation: glamour turns
+		// "__x__" into emphasis/strong, so underscores would make the later
+		// ReplaceAll miss the rendered token.
+		key := "ASTRA_CODE_PLACEHOLDER_" + itoa(counter)
+		// Codex renders fenced code as plain syntax-highlighted lines — no
+		// box, no background band, no padding. The `• `/`  ` gutter added by
+		// renderAssistant keeps it aligned with the rest of the message.
+		boxed := strings.TrimRight(highlighted, "\n")
 		placeholders[key] = boxed
 		return "\n" + key + "\n"
 	})
@@ -99,7 +158,7 @@ func setMarkdownWidth(w int) {
 	mdWidth = w
 	r, err := glamour.NewTermRenderer(
 		glamour.WithWordWrap(w-8),
-		glamour.WithStandardStyle("dark"),
+		glamour.WithStyles(codexMarkdownStyle()),
 	)
 	if err == nil {
 		mdRenderer = r

@@ -823,13 +823,29 @@ func overlayTranscript(a *app) *overlay {
 	for _, it := range a.items {
 		switch it.kind {
 		case "user":
-			fmt.Fprintf(&b, "> %s\n\n", it.raw)
+			b.WriteString(it.raw + "\n\n")
 		case "assistant":
 			b.WriteString(it.raw + "\n\n")
 		case "system":
 			b.WriteString(it.raw + "\n\n")
 		case "tool":
-			fmt.Fprintf(&b, "[tool] %s\n%s\n\n", it.meta, it.raw)
+			if isShellTool(it.meta) {
+				b.WriteString(codexTranscriptCell(
+					codexToolLabel(it.meta, it.args), it.raw,
+					it.status == "SUCCEEDED", it.exitCode, it.duration))
+				b.WriteString("\n\n")
+			} else {
+				b.WriteString(codexExecHeader(false, it.status == "SUCCEEDED", it.meta, it.args))
+				b.WriteString("\n")
+				b.WriteString(codexOutputBlock(it.raw, toolMaxLines, 120))
+				b.WriteString("\n\n")
+			}
+		case "bash":
+			b.WriteString(codexTranscriptCell(
+				it.meta, it.raw, it.status == "SUCCEEDED", it.exitCode, it.duration))
+			b.WriteString("\n\n")
+		case "sep":
+			// visual divider — skip in transcript
 		default:
 			b.WriteString(it.raw + "\n\n")
 		}

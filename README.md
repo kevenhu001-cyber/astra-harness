@@ -13,6 +13,7 @@ Agent 是可替换、可销毁的计算资源；持久化的系统智能存在�
 ## 功能
 
 - **TUI**：对标 Claude Code / Codex CLI / OpenCode 的交互体验
+  - 对话内容显示完全对齐 Codex history cells：用户消息带终端背景色浅染 + `›` 前缀，助手消息为无边框 Markdown + `•` 前缀与缩进续行，工具调用渲染成 `• Running/Ran/Called` exec 单元格（`│`/`└` 缩进、成功/失败绿红圆点、超 5 行截断并提示 `ctrl + t to view transcript`），回合结束输出 `─ Worked for 42s ─` 分隔线
   - 三个区域：标题栏（品牌、provider/model、模式、branch、goal progress）、聊天主区、可切换的侧边栏（Ctrl+B）
     - 侧边栏四种模式（j/k 导航，tab/m 切换）：Sessions · Files · Knowledge · Activity
     - 点击/回车在侧边栏直接打开 claim/unknown/file overlay
@@ -65,6 +66,7 @@ Astra 的 TUI 与 CodeX / OpenCode 共享同样的输入模型，并针对 Astra
 - **Uncertainty Engine**：`priority = impact × uncertainty × dependency_weight ÷ resolution_cost`
 - **Decision Engine**：`utility = goal_progress × goal_weight + info_gain × uncertainty_weight − cost × cost_weight − risk × risk_weight`，并给出 Next Best Action- **Agent Runtime**：OpenAI 兼容协议（OpenAI / DeepSeek / Qwen / OpenRouter / Ollama / 本地模型）+ Anthropic Messages API，统一流式接口与工具调用；token 用量解析兼容双命名约定（Anthropic `input_tokens/output_tokens` 与 OpenAI 兼容 `prompt_tokens/completion_tokens`），OpenAI / DeepSeek / Qwen 后端不再报 0 用量
 - **Exec 流式执行**：`run_command` 的 stdout/stderr 按行分批推送（`EvToolStream` 事件），TUI 与无头模式实时显示部分输出；进程绑定运行上下文（ctrl+c 即杀）与超时，超时强制终止
+  - Windows 下自动使用 `cmd /C` 作为 shell（无需 Git Bash/POSIX），TUI `!` 模式、`run_command` 与 lifecycle hooks 均可用
 - **apply_patch 工具**：Codex 兼容的补丁格式（`*** Begin Patch` / `*** Update File` / `@@` 上下文锚点 / `-`+` ` 变更行 / `*** Add File` / `*** Delete File` / `*** Move to` / `*** End of File`），一次调用多文件增删改与重命名；hunk 匹配带三档宽松（exact → 去尾空白 → 全 trim），上下文锚点精确定位，失败时文件保持不变
 - **Lifecycle Hooks**（对齐 Codex hook_runtime.rs）：`PreToolUse` / `PostToolUse` / `PreCompact` / `PostCompact` 四类命令式钩子，`hooks` 配置注册，stdin 传 JSON 载荷（工具名/参数/结果），Pre 钩子非零退出即拦截（fail-closed），Post 钩子输出进系统事件，可按工具名过滤
 - **跨会话记忆**：State Core 的持久化结论在每次 Run 开始时按**目标相关性**激活——Claim 按 Goal 词项重叠 + 置信度 + 新鲜度排序注入编译状态（上限 8 条防上下文膨胀，`…N more` 截断提示），并输出记忆摘要系统事件

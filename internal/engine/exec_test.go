@@ -3,11 +3,22 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// streamTestCommand returns a command that prints 1..n on separate lines,
+// using syntax that works on both the Windows cmd shell and POSIX sh.
+func streamTestCommand(n int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("for /L %%i in (1,1,%d) do @echo %%i", n)
+	}
+	return fmt.Sprintf("i=1; while [ $i -le %d ]; do echo $i; i=$((i+1)); done", n)
+}
 
 // TestRunShellStreamsOutput verifies the exec-style execution model: output is
 // pushed as EvToolStream chunks while the command runs (batched by
@@ -43,7 +54,7 @@ func TestRunShellStreamsOutput(t *testing.T) {
 
 	// 12 lines → 2 batches (streamBatchSize=10) plus the trailing flush.
 	args, _ := json.Marshal(map[string]any{
-		"command": "printf '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n'",
+		"command": streamTestCommand(12),
 	})
 	res := eng.ExecuteTool(context.Background(), "run_command", string(args))
 	if !res.Success {
