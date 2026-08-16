@@ -18,16 +18,20 @@ import (
 // partition the items/detail slices into ranges — navigation (j/k) is
 // scoped to the active tab.
 type overlay struct {
-	title    string
-	footer   string
-	items    []string
-	detail   []string
-	body     string
-	tabs     []string
-	tabEnds  []int // cumulative length after each tab; len(tabs) buckets
-	tab      int
-	sel      int
-	onSelect func(string) string
+	title      string
+	footer     string
+	items      []string
+	detail     []string
+	allItems   []string
+	allDetail  []string
+	filter     string
+	filterable bool
+	body       string
+	tabs       []string
+	tabEnds    []int // cumulative length after each tab; len(tabs) buckets
+	tab        int
+	sel        int
+	onSelect   func(string) string
 }
 
 func (o *overlay) empty() bool { return len(o.items) == 0 && o.body == "" }
@@ -56,6 +60,28 @@ func (o *overlay) append(label, detail string) {
 	o.tabEnds[len(o.tabEnds)-1]++
 	o.items = append(o.items, label)
 	o.detail = append(o.detail, detail)
+	if o.filterable {
+		o.allItems = append(o.allItems, label)
+		o.allDetail = append(o.allDetail, detail)
+	}
+}
+
+func (o *overlay) applyFilter() {
+	if !o.filterable {
+		return
+	}
+	o.items = nil
+	o.detail = nil
+	o.tabEnds = []int{0}
+	needle := strings.ToLower(o.filter)
+	for i, label := range o.allItems {
+		if needle == "" || strings.Contains(strings.ToLower(label), needle) {
+			o.items = append(o.items, label)
+			o.detail = append(o.detail, o.allDetail[i])
+			o.tabEnds[0]++
+		}
+	}
+	o.sel = 0
 }
 
 // finishTab terminates the current bucket and starts a fresh one.
@@ -82,6 +108,21 @@ func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled boo
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return false, "", false
+	}
+	if o.filterable {
+		if key.Type == tea.KeyRunes && key.String() != "" {
+			o.filter += key.String()
+			o.applyFilter()
+			return false, "", true
+		}
+		if key.String() == "backspace" {
+			if len(o.filter) > 0 {
+				r := []rune(o.filter)
+				o.filter = string(r[:len(r)-1])
+				o.applyFilter()
+			}
+			return false, "", true
+		}
 	}
 	switch key.String() {
 	case "esc", "ctrl+c":
@@ -190,6 +231,10 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 	b.WriteString("\n")
 	if tabs.Len() > 0 {
 		b.WriteString(tabs.String())
+		b.WriteString("\n")
+	}
+	if o.filterable {
+		b.WriteString(styleDim.Render("filter: " + o.filter + "  "))
 		b.WriteString("\n")
 	}
 	b.WriteString(styleFaint.Render(strings.Repeat("─", maxW-4)))
@@ -536,9 +581,62 @@ func overlayProviderConfig(e *engine.Engine) *overlay {
 	return &overlay{title: "Provider configuration", body: b.String(), footer: "esc close"}
 }
 
+var statusLineItems = map[string]string{
+	"model":                "Current model name",
+	"model-with-reasoning": "Model name with reasoning level",
+	"reasoning":            "Current reasoning level",
+	"current-dir":          "Current working directory",
+	"project-name":         "Project name",
+	"git-branch":           "Current git branch",
+	"run-state":            "Ready / Working / Thinking",
+	"approval-mode":        "Permission mode",
+	"context-used":         "Context window percentage used",
+	"context-remaining":    "Context window percentage remaining",
+	"used-tokens":          "Tokens used in current session",
+	"total-input-tokens":   "Total input tokens",
+	"total-output-tokens":  "Total output tokens",
+	"estimated-cost":       "Estimated session cost",
+	"session-id":           "Current session id",
+	"codex-version":        "Astra version",
+}
+
+func overlayStatusLine(e *engine.Engine) *overlay {
+	var b strings.Builder
+	b.WriteString("current: " + strings.Join(e.StatusLineItems(), " · ") + "\n\n")
+	ids := make([]string, 0, len(statusLineItems))
+	for id := range statusLineItems {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		fmt.Fprintf(&b, "  %-22s %s\n", id, statusLineItems[id])
+	}
+	b.WriteString("\nusage: /statusline <item ...> · /statusline reset")
+	return &overlay{title: "Status line", body: b.String(), footer: "esc close"}
+}
+
+func overlayKeymap(e *engine.Engine) *overlay {
+	o := &overlay{title: "Keymap", footer: "↑↓ select · enter remap · esc close"}
+	actions := make([]string, 0, len(engine.DefaultKeymap))
+	for action := range engine.DefaultKeymap {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	for _, action := range actions {
+		key := e.KeymapBinding(action)
+		o.append(fmt.Sprintf("%-20s %s", action, key),
+			fmt.Sprintf("Action:    %s\nCurrent:    %s\n\nPress enter, then press the new key.", action, key))
+	}
+	o.onSelect = func(sel string) string {
+		return strings.Fields(sel)[0]
+	}
+	return o
+}
+
 func overlayModels(e *engine.Engine) *overlay {
 	recent := e.RecentModels()
 	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Recent", "Available", "Configured"}}
+	o.filterable = true
 	for _, id := range recent {
 		parts := strings.SplitN(id, "|", 2)
 		desc := "recently used"
@@ -683,6 +781,35 @@ func overlayTranscript(a *app) *overlay {
 		b.WriteString("(empty transcript)")
 	}
 	return &overlay{title: "Transcript", body: b.String(), footer: "esc close"}
+}
+
+func overlayBacktrack(a *app) *overlay {
+	o := &overlay{title: "Backtrack", footer: "↑↓ select · enter edit · esc close"}
+	for i, it := range a.items {
+		if it.kind != "user" {
+			continue
+		}
+		label := fmt.Sprintf("#%d  %s", i+1, firstLineOf(truncate(it.raw, 60)))
+		o.append(label, it.raw)
+	}
+	if len(o.items) == 0 {
+		o.body = "(no user messages to backtrack to)"
+	}
+	o.onSelect = func(sel string) string {
+		fields := strings.Fields(sel)
+		if len(fields) > 0 {
+			return strings.TrimPrefix(fields[0], "#")
+		}
+		return ""
+	}
+	return o
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func overlayDiff(g *knowledge.Git) *overlay {
@@ -876,7 +1003,14 @@ func overlayTasks(e *engine.Engine) *overlay {
 func overlayAgents(e *engine.Engine) *overlay {
 	return &overlay{
 		title: "Sub-agents",
-		body:  "Sub-agents are spawned from the main loop when an action requires\nisolation or a different model.\n\nFuture:\n  /spawn <task>  — create a sub-agent in its own session\n  /agents        — list active sub-agents\n  /kill <id>     — terminate a sub-agent\n\n(Implemented in Phase 11/12.)",
+		body:  "Multi-agent collaboration is not available in self-hosted Astra.\n\nThis screen mirrors the Codex multi-agent UI; the backend capability\nis not implemented.",
+	}
+}
+
+func overlaySkills() *overlay {
+	return &overlay{
+		title: "Skills",
+		body:  "Skills are not available in self-hosted Astra.\n\nThis screen mirrors the Codex skills UI; the backend capability\nis not implemented.",
 	}
 }
 

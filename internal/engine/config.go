@@ -84,13 +84,38 @@ type Config struct {
 	// AuthServer is the Astra account/auth server base URL used by
 	// `astra login` (device flow). Overridable with ASTRA_AUTH_SERVER.
 	AuthServer string `json:"auth_server,omitempty"`
+	// StatusLine is the ordered list of Codex-compatible status line items
+	// shown in the TUI footer (e.g. model, git-branch, context-used).
+	StatusLine []string `json:"status_line,omitempty"`
+	// StatusLineUseColors enables semantic colors in the status line.
+	StatusLineUseColors *bool `json:"status_line_use_colors,omitempty"`
+	// Keymap maps core TUI action names to their key chord (e.g.
+	// "interrupt_or_quit": "ctrl+c"). Empty values fall back to defaults.
+	Keymap map[string]string `json:"keymap,omitempty"`
 }
 
 // defaultProjectDocBytes mirrors Codex's AGENTS_MD_MAX_BYTES (32 KiB).
 const defaultProjectDocBytes = 32 * 1024
 
+// DefaultKeymap mirrors Codex's default global key bindings for the actions
+// Astra exposes. Values are Bubble Tea key strings.
+var DefaultKeymap = map[string]string{
+	"interrupt_or_quit": "ctrl+c",
+	"quit":              "ctrl+d",
+	"backtrack":         "esc",
+	"history_search":    "ctrl+r",
+	"newline":           "ctrl+j",
+	"external_editor":   "ctrl+g",
+	"transcript":        "ctrl+t",
+	"model_picker":      "ctrl+m",
+}
+
+// DefaultStatusLine mirrors Codex's default footer items.
+var DefaultStatusLine = []string{"model-with-reasoning", "current-dir"}
+
 func defaultConfig() *Config {
 	autoVerify := true
+	statusLineColors := true
 	return &Config{
 		Providers: []ProviderConfig{
 			{ID: "openai", Type: "openai-compatible", Name: "OpenAI",
@@ -112,14 +137,25 @@ func defaultConfig() *Config {
 				BaseURL: "http://localhost:11434/v1", APIKeyEnv: "OLLAMA_API_KEY",
 				Models: []string{"llama3.1", "qwen2.5-coder"}},
 		},
-		PermissionMode:     "ask",
-		MaxIterations:      20,
-		MaxContextTokens:   160000,
-		AutoVerify:         &autoVerify,
-		TimeoutSeconds:     120,
-		SmallModel:         "",
-		MaxProjectDocBytes: defaultProjectDocBytes,
+		PermissionMode:      "ask",
+		MaxIterations:       20,
+		MaxContextTokens:    160000,
+		AutoVerify:          &autoVerify,
+		TimeoutSeconds:      120,
+		SmallModel:          "",
+		MaxProjectDocBytes:  defaultProjectDocBytes,
+		StatusLine:          append([]string(nil), DefaultStatusLine...),
+		StatusLineUseColors: &statusLineColors,
+		Keymap:              cloneKeymap(DefaultKeymap),
 	}
+}
+
+func cloneKeymap(src map[string]string) map[string]string {
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // LoadConfig merges global and project configs, then applies env overrides.
@@ -228,6 +264,15 @@ func mergeFile(cfg *Config, path string) error {
 	}
 	if merged.Hooks != nil {
 		cfg.Hooks = merged.Hooks
+	}
+	if merged.StatusLine != nil {
+		cfg.StatusLine = merged.StatusLine
+	}
+	if merged.StatusLineUseColors != nil {
+		cfg.StatusLineUseColors = merged.StatusLineUseColors
+	}
+	if merged.Keymap != nil {
+		cfg.Keymap = merged.Keymap
 	}
 	return nil
 }

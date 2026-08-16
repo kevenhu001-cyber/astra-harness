@@ -26,6 +26,56 @@ func (e *Engine) PushRecentModel(id string) {
 	e.Config.RecentModels = recents
 }
 
+// StatusLineItems returns the configured footer items (Codex-compatible ids),
+// falling back to Codex's default set.
+func (e *Engine) StatusLineItems() []string {
+	if len(e.Config.StatusLine) > 0 {
+		return e.Config.StatusLine
+	}
+	return DefaultStatusLine
+}
+
+// StatusLineUsesColors reports whether the footer status line should use
+// semantic colors (defaults to true).
+func (e *Engine) StatusLineUsesColors() bool {
+	return e.Config.StatusLineUseColors == nil || *e.Config.StatusLineUseColors
+}
+
+// SetStatusLine persists a new ordered status line item list.
+func (e *Engine) SetStatusLine(items []string) error {
+	e.Config.StatusLine = items
+	return SaveConfig(e.Root, e.Config)
+}
+
+// KeymapBinding returns the configured key chord for an action, falling back
+// to the Codex default.
+func (e *Engine) KeymapBinding(action string) string {
+	if e.Config.Keymap != nil {
+		if v := e.Config.Keymap[action]; v != "" {
+			return v
+		}
+	}
+	return DefaultKeymap[action]
+}
+
+// SetKeymap persists a key chord for a core TUI action.
+func (e *Engine) SetKeymap(action, key string) error {
+	if _, ok := DefaultKeymap[action]; !ok {
+		return errors.New("unknown keymap action")
+	}
+	if e.Config.Keymap == nil {
+		e.Config.Keymap = cloneKeymap(DefaultKeymap)
+	}
+	e.Config.Keymap[action] = key
+	return SaveConfig(e.Root, e.Config)
+}
+
+// ResetKeymap clears custom bindings back to Codex defaults.
+func (e *Engine) ResetKeymap() error {
+	e.Config.Keymap = cloneKeymap(DefaultKeymap)
+	return SaveConfig(e.Root, e.Config)
+}
+
 // RenameSession renames the active session by removing the old file and
 // rewriting the session with the new ID. Returns an error if the new ID is
 // empty, contains path separators, or would escape the sessions directory.

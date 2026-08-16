@@ -64,6 +64,43 @@ func TestStatusBarNarrowWideChars(t *testing.T) {
 	}
 }
 
+func TestStatusLineSegments(t *testing.T) {
+	a := newTestApp(t)
+	a.lastUsage = llm.Usage{InputTokens: 1000, OutputTokens: 2000}
+	segs := a.statusLineSegments()
+	if len(segs) == 0 {
+		t.Fatal("status line rendered empty")
+	}
+	found := false
+	for _, s := range segs {
+		if strings.Contains(s, a.engine.Model) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("status line missing model: %v", segs)
+	}
+}
+
+func TestOverlayShortcutsCodexStrings(t *testing.T) {
+	o := overlayShortcuts()
+	if !strings.Contains(o.body, "/  for commands") ||
+		!strings.Contains(o.body, "esc esc  to edit previous message") ||
+		!strings.Contains(o.body, "customize shortcuts with /keymap") {
+		t.Fatalf("shortcuts overlay not Codex-aligned:\n%s", o.body)
+	}
+}
+
+func TestComposerImageAttachmentRendered(t *testing.T) {
+	c := newComposer(80)
+	c.AddImage("/tmp/shot.png")
+	out := c.View(80)
+	if !strings.Contains(out, "[Image #1]") || !strings.Contains(out, "/tmp/shot.png") {
+		t.Fatalf("image attachment not rendered:\n%s", out)
+	}
+}
+
 func TestOverlayHelpCyclesTabs(t *testing.T) {
 	a := newTestApp(t)
 	a.overlay = overlayHelp()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,16 @@ type verifyDoneMsg struct {
 	output  string
 }
 
+type externalEditDoneMsg struct {
+	text string
+	err  error
+}
+
+type imagePastedMsg struct {
+	path string
+	err  error
+}
+
 type loginDoneMsg struct {
 	cred *auth.Credential
 	err  error
@@ -89,32 +100,33 @@ type app struct {
 	overlay       *overlay
 	spinner       spinner.Model
 
-	mode         string
-	busy         bool
-	busyAt       time.Time
-	pendingPerm  *engine.PermissionRequest
-	pendingAsk   *askState
-	bashOut      string
-	bashErr      error
-	status       string
-	toast        string
-	toastUntil   time.Time
-	lastUsage    llm.Usage
-	totalCost    float64
-	totalTokens  int
-	turns        int
-	successCnt   int
-	failCnt      int
-	startedAt    time.Time
-	quit         bool
-	quitArmed    bool
-	quitArmedAt  time.Time
-	escArmed     bool
-	escArmedAt   time.Time
-	atBottom     bool
-	userEmail    string
-	deviceFlow   *auth.DeviceFlow
-	loginOverlay *loginOverlay
+	mode                string
+	busy                bool
+	busyAt              time.Time
+	pendingPerm         *engine.PermissionRequest
+	pendingAsk          *askState
+	bashOut             string
+	bashErr             error
+	status              string
+	toast               string
+	toastUntil          time.Time
+	lastUsage           llm.Usage
+	totalCost           float64
+	totalTokens         int
+	turns               int
+	successCnt          int
+	failCnt             int
+	startedAt           time.Time
+	quit                bool
+	quitArmed           bool
+	quitArmedAt         time.Time
+	escArmed            bool
+	escArmedAt          time.Time
+	keymapCaptureAction string
+	atBottom            bool
+	userEmail           string
+	deviceFlow          *auth.DeviceFlow
+	loginOverlay        *loginOverlay
 }
 
 type askState struct {
@@ -152,7 +164,18 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 
 // Run starts the Bubble Tea program.
 func Run(root string, cfg *engine.Config, eng *engine.Engine) error {
+	return RunWithOptions(root, cfg, eng, false)
+}
+
+// RunWithOptions starts the Bubble Tea program with optional Codex-style
+// resume picker when saved sessions exist.
+func RunWithOptions(root string, cfg *engine.Config, eng *engine.Engine, showResumePicker bool) error {
 	a := NewApp(root, cfg, eng)
+	if showResumePicker {
+		if sessions, err := eng.Store.ListSessions(); err == nil && len(sessions) > 0 {
+			a.overlay = overlaySessions(eng)
+		}
+	}
 	p := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
 		return err
@@ -161,7 +184,7 @@ func Run(root string, cfg *engine.Config, eng *engine.Engine) error {
 }
 
 func (a *app) Init() tea.Cmd {
-	return tea.Batch(a.spinner.Tick, a.waitEvent)
+	return tea.Batch(a.spinner.Tick, a.waitEvent, tea.SetWindowTitle("Astra · "+filepath.Base(a.root)))
 }
 
 func (a *app) waitEvent() tea.Msg {
@@ -220,6 +243,27 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.addSystem("verify " + statusWord(m.success) + "\n" + m.output)
 		a.refreshViewport()
 		return a, nil
+	case externalEditDoneMsg:
+		if m.err != nil {
+			a.addError("external editor: " + m.err.Error())
+		} else {
+			a.composer.SetValue(m.text)
+			a.composer.Focus()
+			a.addSystem("external edit applied")
+		}
+		a.busy = false
+		a.refreshViewport()
+		return a, nil
+	case imagePastedMsg:
+		a.busy = false
+		if m.err != nil {
+			a.addError("paste image: " + m.err.Error())
+		} else {
+			a.composer.AddImage(m.path)
+			a.addSystem("attached " + m.path)
+		}
+		a.refreshViewport()
+		return a, nil
 	case loginDoneMsg:
 		a.deviceFlow = nil
 		a.busy = false
@@ -275,6 +319,43 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 	s := msg.String()
+
+	// Keymap capture mode: the next key becomes the binding for the selected
+	// action (Esc cancels).
+	if a.keymapCaptureAction != "" {
+		if s == "esc" {
+			a.keymapCaptureAction = ""
+			a.addSystem("keymap: cancelled")
+			return a, nil
+		}
+		action := a.keymapCaptureAction
+		a.keymapCaptureAction = ""
+		if err := a.engine.SetKeymap(action, s); err != nil {
+			a.addError(err.Error())
+		} else {
+			a.addSystem("keymap: " + action + " → " + s)
+		}
+		return a, nil
+	}
+
+	// Dynamic Codex-style bindings (configurable via /keymap).
+	if s != "" && s == a.engine.KeymapBinding("external_editor") {
+		draft := a.composer.Value()
+		a.busy = true
+		a.addSystem("external editor: waiting...")
+		return a, func() tea.Msg {
+			text, err := openExternalEditor(draft)
+			return externalEditDoneMsg{text: text, err: err}
+		}
+	}
+	if s != "" && s == a.engine.KeymapBinding("transcript") {
+		a.overlay = overlayTranscript(a)
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("model_picker") {
+		a.overlay = overlayModels(a.engine)
+		return a, nil
+	}
 
 	// Palette has top priority while visible.
 	if a.palette.visible {
@@ -409,7 +490,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !a.busy && a.composer.Value() == "" {
 			if a.escArmed {
 				a.escArmed = false
-				return a, a.executeCommand("/undo")
+				a.overlay = overlayBacktrack(a)
+				return a, nil
 			}
 			a.escArmed = true
 			a.escArmedAt = now
@@ -441,6 +523,22 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+k":
 		a.palette.Show()
 		return a, nil
+	case "ctrl+v":
+		if a.composer.Value() != "" {
+			break
+		}
+		a.busy = true
+		a.addSystem("paste image: reading clipboard...")
+		return a, func() tea.Msg {
+			path, err := pasteClipboardImage()
+			if err == nil {
+				return imagePastedMsg{path: path}
+			}
+			if text, terr := readClipboardText(); terr == nil && looksLikeImagePath(text) {
+				return imagePastedMsg{path: text}
+			}
+			return imagePastedMsg{err: err}
+		}
 	case "ctrl+t":
 		a.overlay = overlayTranscript(a)
 		return a, nil
@@ -484,6 +582,16 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	text, submit, _ := a.composer.update(msg)
 	if submit {
 		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "!") {
+			a.composer.ClearImages()
+		} else if len(a.composer.Images()) > 0 {
+			var img strings.Builder
+			for i, p := range a.composer.Images() {
+				fmt.Fprintf(&img, "![Image #%d](%s)\n", i+1, p)
+			}
+			text = img.String() + text
+			a.composer.ClearImages()
+		}
 		if strings.HasPrefix(trimmed, "/") {
 			a.executeCommand(trimmed)
 			return a, nil
@@ -681,6 +789,33 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 			a.addError(err.Error())
 		} else {
 			a.addSystem("provider " + id + " model: " + val)
+		}
+	case "/statusline":
+		if args == "" || args == "list" {
+			a.overlay = overlayStatusLine(a.engine)
+		} else if args == "reset" {
+			if err := a.engine.SetStatusLine(append([]string(nil), engine.DefaultStatusLine...)); err != nil {
+				a.addError(err.Error())
+			} else {
+				a.addSystem("statusline: reset to defaults")
+			}
+		} else {
+			items := strings.Fields(args)
+			if err := a.engine.SetStatusLine(items); err != nil {
+				a.addError(err.Error())
+			} else {
+				a.addSystem("statusline: " + strings.Join(items, " · "))
+			}
+		}
+	case "/keymap":
+		if args == "reset" {
+			if err := a.engine.ResetKeymap(); err != nil {
+				a.addError(err.Error())
+			} else {
+				a.addSystem("keymap: reset to Codex defaults")
+			}
+		} else {
+			a.overlay = overlayKeymap(a.engine)
 		}
 	case "/permissions", "/perm":
 		if args != "" {
@@ -880,6 +1015,8 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		a.overlay = overlayMcp(a.engine)
 	case "/agents":
 		a.overlay = overlayAgents(a.engine)
+	case "/skills":
+		a.overlay = overlaySkills()
 	case "/tasks":
 		a.overlay = overlayTasks(a.engine)
 	case "/clear":
@@ -954,6 +1091,25 @@ func (a *app) overlaySelect(selected string) {
 				a.addSystem(fmt.Sprintf("switched to %s/%s", parts[0], parts[1]))
 			}
 		}
+	case "Keymap":
+		a.keymapCaptureAction = selected
+		a.addSystem("keymap: press a key for " + selected + " (esc cancels)")
+	case "Backtrack":
+		n, err := strconv.Atoi(selected)
+		if err != nil || n < 1 {
+			a.addError("backtrack: invalid message")
+			return
+		}
+		msg, err := a.engine.BacktrackToUserMessage(n - 1)
+		if err != nil {
+			a.addError("backtrack: " + err.Error())
+			return
+		}
+		a.items = nil
+		a.streaming = nil
+		a.composer.SetValue(msg)
+		a.composer.Focus()
+		a.addSystem(fmt.Sprintf("backtrack: editing message #%d", n))
 	}
 }
 
@@ -1228,27 +1384,7 @@ func (a *app) renderStatusBar() string {
 	} else if left == "" {
 		left = "? for shortcuts"
 	}
-	rightParts := []string{
-		fmt.Sprintf("%s/%s", a.engine.ProviderID(), a.engine.Model),
-	}
-	if br := a.engine.Git.BranchOr(""); br != "" {
-		rightParts = append(rightParts, "⎇ "+br)
-	}
-	if mode := a.engine.Perm.GetMode(); mode != engine.ModeAsk {
-		rightParts = append(rightParts, "["+mode+"]")
-	}
-	if a.lastUsage.InputTokens > 0 || a.lastUsage.OutputTokens > 0 {
-		rightParts = append(rightParts, fmt.Sprintf("%d→%d tok", a.lastUsage.InputTokens, a.lastUsage.OutputTokens))
-		if a.lastUsage.CacheReadTokens > 0 {
-			rightParts = append(rightParts, styleOk.Render(fmt.Sprintf("cache %d", a.lastUsage.CacheReadTokens)))
-		}
-		if a.lastUsage.ReasoningTokens > 0 {
-			rightParts = append(rightParts, styleWarn.Render(fmt.Sprintf("reason %d", a.lastUsage.ReasoningTokens)))
-		}
-		rightParts = append(rightParts, fmt.Sprintf("$ $%.4f", a.totalCost))
-	}
-	rightParts = append(rightParts, "? help")
-	right := strings.Join(rightParts, "  ")
+	right := strings.Join(a.statusLineSegments(), "  ·  ")
 	widthAvail := a.widthAvail() - 2
 	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(right)
@@ -1274,6 +1410,77 @@ func (a *app) renderStatusBar() string {
 	}
 	line := left + strings.Repeat(" ", pad) + right
 	return styleStatusBar.Width(a.widthAvail()).Render(line)
+}
+
+// statusLineSegments renders the configured Codex-compatible footer items.
+func (a *app) statusLineSegments() []string {
+	e := a.engine
+	var out []string
+	usage := a.lastUsage
+	total := usage.InputTokens + usage.OutputTokens
+	cost := a.totalCost
+	if cost <= 0 {
+		cost = approximateCost(e.Model, usage)
+	}
+	reasoning := e.ReasoningEffort()
+	for _, id := range e.StatusLineItems() {
+		switch id {
+		case "model":
+			out = append(out, e.Model)
+		case "model-with-reasoning":
+			m := e.Model
+			if reasoning != "" && reasoning != "medium" {
+				m = m + " (" + reasoning + ")"
+			}
+			out = append(out, m)
+		case "reasoning":
+			if reasoning != "" {
+				out = append(out, reasoning)
+			}
+		case "current-dir", "project-name":
+			out = append(out, filepath.Base(e.Root))
+		case "git-branch":
+			if br := e.Git.BranchOr(""); br != "" {
+				out = append(out, br)
+			}
+		case "run-state":
+			if a.busy {
+				out = append(out, "Working")
+			} else {
+				out = append(out, "Ready")
+			}
+		case "approval-mode":
+			out = append(out, e.Perm.GetMode())
+		case "context-used":
+			if max := e.Config.MaxContextTokens; max > 0 && total > 0 {
+				pct := total * 100 / max
+				out = append(out, fmt.Sprintf("%d%% context used", pct))
+			}
+		case "context-remaining":
+			if max := e.Config.MaxContextTokens; max > 0 && total > 0 {
+				pct := total * 100 / max
+				if pct > 100 {
+					pct = 100
+				}
+				out = append(out, fmt.Sprintf("%d%% context left", 100-pct))
+			}
+		case "used-tokens":
+			out = append(out, fmt.Sprintf("%d tok", total))
+		case "total-input-tokens":
+			out = append(out, fmt.Sprintf("%d in", usage.InputTokens))
+		case "total-output-tokens":
+			out = append(out, fmt.Sprintf("%d out", usage.OutputTokens))
+		case "estimated-cost":
+			if cost > 0 {
+				out = append(out, fmt.Sprintf("$%.4f", cost))
+			}
+		case "session-id":
+			out = append(out, e.SessionID())
+		case "codex-version":
+			out = append(out, "astra")
+		}
+	}
+	return out
 }
 
 func (a *app) renderPermission() string {

@@ -14,13 +14,20 @@ black/white/orange color scheme the user asked for.
 | `app.go handleKey` | `keymap.rs`, `bottom_pane/chat_composer.rs` | Ctrl+C double-press quit, Ctrl+D quit, Esc-Esc edit previous, Ctrl+T transcript, Ctrl+R history search |
 | `theme.go "codex"` | `style.rs` + user requirement | black/white/orange palette, orange accent only |
 | `overlayProviderConfig` + `/set-*` | `config.md` provider model | configure Provider, URL, API key, Model ID in-app and persist to `.astra/config.json` |
+| `external_editor.go` + `Ctrl+G` | `external_editor.rs` | temp-file external editing via `VISUAL`/`EDITOR` |
+| `clipboard.go` + `Ctrl+V` | `clipboard_paste.rs`, `chat_composer.rs` | clipboard image bytes (Windows/macOS/Linux) and image-path paste, `[Image #N]` rows |
+| `app.go Backtrack` + `overlayBacktrack` | `app_backtrack.rs`, `pager_overlay.rs` | Esc opens transcript, select user message, truncate and re-edit (practical, no branch) |
+| `statusLineSegments` + `/statusline` | `status_line_setup.rs`, `status_line_style.rs` | configurable footer items with Codex defaults and ids |
+| `keymapCapture` + `/keymap` | `keymap.rs`, `keymap_setup` | capture-style remap of core actions, persisted in config |
+| `overlayModels` filter | `model_popups.rs` | searchable model picker |
+| `RunWithOptions` resume picker | `resume_picker.rs` | startup resume picker when saved sessions exist |
 
 ## Not yet ported
 
-- External editor (`ctrl+g`) and image paste (`ctrl+v`)
-- Full Esc backtrack transcript editing (currently maps to `/undo`)
-- `/statusline` configurable footer row
-- Model popup preset list fidelity
-- Keymap customization (`/keymap`)
+- Full Codex branch-style backtrack (currently truncate-and-edit)
+- `/keymap` full action coverage (core actions only for now)
+- `/statusline` every Codex item (Astra-computable subset is done)
+- Skills/multi-agent/collaboration/enterprise screens render as “not available” shells
+- Resume picker visual fidelity (list exists; dense/archive views not yet)
 
 These are tracked as the next parity milestones.

@@ -142,6 +142,78 @@ func TestUpdateProviderPersistsConfig(t *testing.T) {
 	}
 }
 
+func TestBacktrackToUserMessage(t *testing.T) {
+	root := t.TempDir()
+	cfg := &Config{
+		Providers: []ProviderConfig{{
+			ID: "test", Type: "openai-compatible", Name: "Test",
+			BaseURL: "https://example.invalid/v1", APIKeyEnv: "TEST_API_KEY",
+			Models: []string{"test-model"},
+		}},
+		DefaultProvider: "test", DefaultModel: "test-model",
+		PermissionMode: "ask", MaxIterations: 1, TimeoutSeconds: 5,
+	}
+	t.Setenv("TEST_API_KEY", "stub")
+	eng, err := NewEngine(root, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Store.Close()
+	eng.addMessage(llm.RoleUser, "first")
+	eng.addMessage(llm.RoleAssistant, "answer one")
+	eng.addMessage(llm.RoleUser, "second")
+	eng.addMessage(llm.RoleAssistant, "answer two")
+
+	msg, err := eng.BacktrackToUserMessage(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg != "second" {
+		t.Fatalf("backtrack message = %q", msg)
+	}
+	eng.mu.Lock()
+	n := len(eng.messages)
+	eng.mu.Unlock()
+	if n != 3 {
+		t.Fatalf("expected 3 messages after backtrack, got %d", n)
+	}
+}
+
+func TestStatusLineAndKeymapPersist(t *testing.T) {
+	root := t.TempDir()
+	cfg := &Config{
+		Providers: []ProviderConfig{{
+			ID: "test", Type: "openai-compatible", Name: "Test",
+			BaseURL: "https://example.invalid/v1", APIKeyEnv: "TEST_API_KEY",
+			Models: []string{"test-model"},
+		}},
+		DefaultProvider: "test", DefaultModel: "test-model",
+		PermissionMode: "ask", MaxIterations: 1, TimeoutSeconds: 5,
+	}
+	t.Setenv("TEST_API_KEY", "stub")
+	eng, err := NewEngine(root, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Store.Close()
+
+	if err := eng.SetStatusLine([]string{"model", "git-branch"}); err != nil {
+		t.Fatal(err)
+	}
+	if items := eng.StatusLineItems(); len(items) != 2 || items[0] != "model" || items[1] != "git-branch" {
+		t.Fatalf("status line = %v", items)
+	}
+	if err := eng.SetKeymap("transcript", "ctrl+x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := eng.KeymapBinding("transcript"); got != "ctrl+x" {
+		t.Fatalf("keymap binding = %q", got)
+	}
+	if got := eng.KeymapBinding("external_editor"); got != "ctrl+g" {
+		t.Fatalf("default keymap binding = %q", got)
+	}
+}
+
 func TestEngineRename(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module demo\n\ngo 1.22\n"), 0o644); err != nil {

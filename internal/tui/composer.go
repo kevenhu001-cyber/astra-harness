@@ -42,6 +42,8 @@ var slashCommands = []slashCmd{
 	{Name: "/set-url", Desc: "set provider base URL", Category: "Model", Placeholder: "<provider> <url>"},
 	{Name: "/set-key", Desc: "set provider API key (saved locally)", Category: "Model", Placeholder: "<provider> <key>"},
 	{Name: "/set-model", Desc: "add and switch to a model ID", Category: "Model", Placeholder: "<provider> <model>"},
+	{Name: "/statusline", Desc: "configure footer status line items", Category: "Model", Placeholder: "model git-branch ..."},
+	{Name: "/keymap", Desc: "view or remap core shortcuts", Category: "Help", Placeholder: "debug|reset"},
 	{Name: "/cost", Desc: "token usage and cost", Category: "Model"},
 	{Name: "/stats", Desc: "session statistics", Category: "Model"},
 	{Name: "/permissions", Desc: "permission mode (ask|allow|deny)", Category: "Safety", Placeholder: "ask|allow|deny"},
@@ -63,6 +65,7 @@ var slashCommands = []slashCmd{
 	{Name: "/paste", Desc: "paste-mode toggle", Category: "Help"},
 	{Name: "/mcp", Desc: "manage MCP servers (placeholder)", Category: "Help"},
 	{Name: "/agents", Desc: "spawn / manage sub-agents", Category: "Session"},
+	{Name: "/skills", Desc: "manage skills (not available)", Category: "Help"},
 	{Name: "/tasks", Desc: "show todo list", Category: "Session"},
 	{Name: "/clear", Desc: "clear chat view", Category: "Session", Shortcut: "Ctrl+L"},
 	{Name: "/new", Desc: "new session", Category: "Session", Shortcut: "Ctrl+T"},
@@ -104,6 +107,9 @@ type composer struct {
 	fileCandidates []atCompletion
 
 	width int
+
+	// images holds attached local image paths rendered as [Image #N] rows.
+	images []string
 }
 
 func newComposer(width int) composer {
@@ -121,6 +127,18 @@ func newComposer(width int) composer {
 func (c *composer) SetWidth(w int) {
 	c.width = w
 	c.ta.SetWidth(w - 6)
+}
+
+func (c *composer) AddImage(path string) {
+	c.images = append(c.images, path)
+}
+
+func (c *composer) Images() []string {
+	return c.images
+}
+
+func (c *composer) ClearImages() {
+	c.images = nil
 }
 
 func (c *composer) Value() string { return c.ta.Value() }
@@ -480,6 +498,13 @@ func (c *composer) View(width int) string {
 		return c.viewSearch(width)
 	}
 	inner := c.ta.View()
+	if len(c.images) > 0 {
+		var img strings.Builder
+		for i, p := range c.images {
+			fmt.Fprintf(&img, "  %s %s\n", styleDim.Render(fmt.Sprintf("[Image #%d]", i+1)), styleBody.Render(p))
+		}
+		inner = img.String() + inner
+	}
 	boxStyle := styleComposer
 	if c.focused {
 		boxStyle = styleComposerFocused

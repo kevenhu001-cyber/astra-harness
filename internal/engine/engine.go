@@ -739,6 +739,48 @@ func (e *Engine) LoadSession(sess *core.Session) error {
 	return nil
 }
 
+// BacktrackToUserMessage truncates the transcript after the n-th user message
+// (0-based) and returns that message's content so the UI can re-edit it. This
+// is the practical Codex backtrack behavior: no branch session is created.
+func (e *Engine) BacktrackToUserMessage(n int) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	idx := -1
+	count := -1
+	for i, m := range e.messages {
+		if m.Role == llm.RoleUser {
+			count++
+			if count == n {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		return "", fmt.Errorf("no such user message")
+	}
+	content := e.messages[idx].Content
+	e.messages = e.messages[:idx+1]
+	e.running = false
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
+	}
+	if e.session != nil {
+		userSeen := -1
+		for i, m := range e.session.Messages {
+			if m.Role == llm.RoleUser {
+				userSeen++
+				if userSeen == n {
+					e.session.Messages = e.session.Messages[:i+1]
+					break
+				}
+			}
+		}
+	}
+	return content, nil
+}
+
 // ProviderID returns the active provider id (safe for display).
 func (e *Engine) ProviderID() string {
 	if e.Provider != nil {

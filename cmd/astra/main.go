@@ -164,7 +164,7 @@ func runTUI(prompt string) {
 			_ = eng.Run(context.Background(), prompt)
 		}()
 	}
-	if err := tui.Run(root, cfg, eng); err != nil {
+	if err := tui.RunWithOptions(root, cfg, eng, prompt == ""); err != nil {
 		fatal("tui: %v", err)
 	}
 }
