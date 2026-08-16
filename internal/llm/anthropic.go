@@ -115,7 +115,7 @@ func (p *Anthropic) Stream(ctx context.Context, req *Request) (<-chan StreamEven
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, NewHTTPStatusError("anthropic", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	events := make(chan StreamEvent, 8)
 	go func() {

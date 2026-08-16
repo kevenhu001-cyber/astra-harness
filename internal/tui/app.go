@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/kevenhu001-cyber/astra-harness/internal/auth"
 	"github.com/kevenhu001-cyber/astra-harness/internal/core"
 	"github.com/kevenhu001-cyber/astra-harness/internal/engine"
 	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
@@ -52,6 +53,11 @@ type indexDoneMsg struct {
 type verifyDoneMsg struct {
 	success bool
 	output  string
+}
+
+type loginDoneMsg struct {
+	cred *auth.Credential
+	err  error
 }
 
 type bashDoneMsg struct {
@@ -102,6 +108,9 @@ type app struct {
 	startedAt   time.Time
 	quit        bool
 	atBottom    bool
+	userEmail   string
+	deviceFlow  *auth.DeviceFlow
+	loginOverlay *loginOverlay
 }
 
 type askState struct {
@@ -118,6 +127,9 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 		root: root, engine: eng, cfg: cfg, events: eng.Events,
 		spinner: sp, mode: modeChat,
 		startedAt: time.Now(),
+	}
+	if cred, err := auth.LoadCredential(); err == nil && cred != nil {
+		a.userEmail = cred.User.Email
 	}
 	a.vp = viewport.New(80, 24)
 	a.vp.Style = lipgloss.NewStyle().Padding(0, 1)
@@ -202,6 +214,21 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case verifyDoneMsg:
 		a.busy = false
 		a.addSystem("verify " + statusWord(m.success) + "\n" + m.output)
+		a.refreshViewport()
+		return a, nil
+	case loginDoneMsg:
+		a.deviceFlow = nil
+		a.busy = false
+		if m.err != nil {
+			a.addError("login: " + m.err.Error())
+		} else if m.cred != nil {
+			if err := auth.SaveCredential(m.cred); err != nil {
+				a.addError("save credential: " + err.Error())
+			} else {
+				a.userEmail = m.cred.User.Email
+				a.addSystem("logged in as " + m.cred.User.Email)
+			}
+		}
 		a.refreshViewport()
 		return a, nil
 	case bashDoneMsg:
@@ -593,6 +620,69 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		on := !a.engine.Perm.IsPlanMode()
 		a.engine.Perm.SetPlanMode(on)
 		a.addSystem(fmt.Sprintf("plan mode: %v (write/execute blocked)", on))
+	case "/login":
+		if a.deviceFlow != nil {
+			a.toast = "login already in progress"
+			break
+		}
+		if a.userEmail != "" {
+			a.toast = "already signed in as " + a.userEmail
+			break
+		}
+		server := a.cfg.AuthServer
+		if server == "" {
+			server = auth.DefaultServer
+		}
+		flow, err := auth.New(server).StartDevice(context.Background())
+		if err != nil {
+			a.addError("login: " + err.Error())
+			break
+		}
+		a.deviceFlow = flow
+		a.addSystem(fmt.Sprintf("device login · open %s · code %s (expires %ds)", flow.VerificationURI, flow.UserCode, flow.ExpiresIn))
+		_ = auth.OpenBrowser(flow.VerificationURI)
+		return func() tea.Msg {
+			c := auth.New(server)
+			interval := time.Duration(flow.Interval) * time.Second
+			if interval < time.Second {
+				interval = 5 * time.Second
+			}
+			deadline := time.Now().Add(time.Duration(flow.ExpiresIn) * time.Second)
+			for {
+				if time.Now().After(deadline) {
+					return loginDoneMsg{err: fmt.Errorf("authorization expired")}
+				}
+				res, err := c.PollDevice(context.Background(), flow.DeviceCode)
+				if err != nil {
+					time.Sleep(interval)
+					continue
+				}
+				switch res.Status {
+				case "approved":
+					return loginDoneMsg{cred: &auth.Credential{
+						Server: server, Token: res.AccessToken, User: *res.User,
+						ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+					}}
+				case "expired":
+					return loginDoneMsg{err: fmt.Errorf("authorization expired")}
+				default:
+					time.Sleep(interval)
+				}
+			}
+		}
+	case "/logout":
+		if err := auth.ClearCredential(); err != nil {
+			a.addError("logout: " + err.Error())
+		} else {
+			a.userEmail = ""
+			a.addSystem("signed out")
+		}
+	case "/whoami":
+		if a.userEmail == "" {
+			a.addSystem("not signed in — run /login")
+		} else {
+			a.addSystem("signed in as " + a.userEmail)
+		}
 	case "/init", "/index":
 		a.addSystem("indexing repository...")
 		a.busy = true
@@ -713,7 +803,7 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 			a.overlay = &overlay{title: "File: " + args, body: renderFilePreview(string(data), args)}
 		}
 	case "/mcp":
-		a.overlay = overlayMcp()
+		a.overlay = overlayMcp(a.engine)
 	case "/agents":
 		a.overlay = overlayAgents(a.engine)
 	case "/tasks":
@@ -857,6 +947,20 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		it := &chatItem{kind: "tool", meta: name, status: "running", raw: args}
 		a.items = append(a.items, it)
 		a.status = "tool: " + name
+	case engine.EvToolStream:
+		// Append live output to the most recent running tool card so partial
+		// results are visible while the command executes.
+		if data, ok := ev.Data.(map[string]any); ok {
+			chunk, _ := data["chunk"].(string)
+			for i := len(a.items) - 1; i >= 0; i-- {
+				it := a.items[i]
+				if it.kind == "tool" && it.status == "running" {
+					it.raw += chunk
+					it.rendered = a.renderToolStreaming(it.meta, it.raw)
+					break
+				}
+			}
+		}
 	case engine.EvToolEnd:
 		data, _ := ev.Data.(map[string]any)
 		name, _ := data["name"].(string)
@@ -954,6 +1058,8 @@ func (a *app) View() string {
 	switch {
 	case a.palette.visible:
 		main = a.palette.View()
+	case a.loginOverlay != nil:
+		main = renderLoginOverlay(a.loginOverlay, a.width-sideW, a.viewportHeight())
 	case a.overlay != nil:
 		main = a.overlay.View(a.width-sideW, a.viewportHeight())
 	default:
@@ -1015,6 +1121,11 @@ func (a *app) renderHeader() string {
 		b.WriteString("  ")
 		b.WriteString(styleDim.Render("reason="))
 		b.WriteString(styleEmph.Render(e))
+	}
+	if a.userEmail != "" {
+		b.WriteString("  ")
+		b.WriteString(styleSubtle.Render("acct "))
+		b.WriteString(styleEmph.Render(a.userEmail))
 	}
 	return styleHeaderRow.Render(b.String())
 }
@@ -1174,6 +1285,16 @@ func (a *app) renderAssistant(md string, dur time.Duration) string {
 		body = styleDim.Render("…")
 	}
 	return styleAssistantBox.Width(a.width - 4).Render(title + "\n\n" + body)
+}
+
+// renderToolStreaming renders a tool card that is still producing output.
+func (a *app) renderToolStreaming(name, output string) string {
+	body := output
+	if len(body) > 4000 {
+		body = body[:4000] + "\n…"
+	}
+	title := styleKey.Render("⌘ "+name) + "  " + styleWarn.Render("RUNNING…")
+	return styleToolBoxRunning.Width(a.width - 4).Render(title + "\n\n" + lipgloss.NewStyle().Width(a.width-8).Render(body))
 }
 
 func (a *app) renderTool(name string, success bool, output string) string {

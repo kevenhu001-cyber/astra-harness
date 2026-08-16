@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -63,6 +64,39 @@ type Usage struct {
 	OutputTokens     int `json:"output_tokens"`
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+}
+
+// UnmarshalJSON tolerates both token-naming conventions seen in the wild:
+// Anthropic-style input_tokens/output_tokens/cache_read_input_tokens and
+// OpenAI-compatible prompt_tokens/completion_tokens. Without this, usage
+// tracking silently reports zero for OpenAI / DeepSeek / Qwen backends.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		InputTokens            int `json:"input_tokens"`
+		OutputTokens           int `json:"output_tokens"`
+		CacheReadTokens        int `json:"cache_read_tokens"`
+		CacheReadInputTokens   int `json:"cache_read_input_tokens"`
+		ReasoningTokens        int `json:"reasoning_tokens"`
+		PromptTokens           int `json:"prompt_tokens"`
+		CompletionTokens       int `json:"completion_tokens"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.InputTokens = firstNonZero(raw.InputTokens, raw.PromptTokens)
+	u.OutputTokens = firstNonZero(raw.OutputTokens, raw.CompletionTokens)
+	u.CacheReadTokens = firstNonZero(raw.CacheReadTokens, raw.CacheReadInputTokens)
+	u.ReasoningTokens = raw.ReasoningTokens
+	return nil
+}
+
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 // StreamEvent is one event from the streaming provider.
@@ -154,3 +188,27 @@ type providerError string
 func (e providerError) Error() string { return string(e) }
 
 const errNoProviders = providerError("no LLM providers configured")
+
+// HTTPStatusError marks a failed HTTP response with its status code. The
+// engine uses it to decide whether a failure is transient (429 / 5xx) and
+// therefore retryable with backoff.
+type HTTPStatusError struct {
+	Provider   string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("%s: HTTP %d: %s", e.Provider, e.StatusCode, e.Body)
+}
+
+// IsRetryable reports whether the error is a transient HTTP status (rate
+// limit or server-side error).
+func (e *HTTPStatusError) IsRetryable() bool {
+	return e.StatusCode == 429 || e.StatusCode >= 500
+}
+
+// NewHTTPStatusError builds an HTTPStatusError for a provider.
+func NewHTTPStatusError(provider string, code int, body string) error {
+	return &HTTPStatusError{Provider: provider, StatusCode: code, Body: body}
+}

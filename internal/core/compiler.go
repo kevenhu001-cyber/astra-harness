@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -11,10 +12,11 @@ import (
 type Compiler struct {
 	MaxUnknowns int
 	MaxActions  int
+	MaxClaims   int
 }
 
 func NewCompiler() *Compiler {
-	return &Compiler{MaxUnknowns: 5, MaxActions: 6}
+	return &Compiler{MaxUnknowns: 5, MaxActions: 6, MaxClaims: 8}
 }
 
 // Compile produces a P0/P1-priority context block used in the system prompt.
@@ -58,10 +60,29 @@ func (c *Compiler) Compile(st *State, recentEvents []string) string {
 			}
 		}
 		fmt.Fprintf(&b, "\nCLAIMS: %d total | %d verified | %d supported | %d contradicted\n", len(claims), verified, supported, contradicted)
-		for _, cl := range claims {
-			if cl.Status == ClaimVerified || cl.Status == ClaimContradicted {
-				fmt.Fprintf(&b, "- [%s] %s %s %s (confidence %.0f%%)\n", cl.Status, cl.Subject, cl.Predicate, cl.Object, cl.Confidence*100)
+		// Cross-session memory activation: rank claims by relevance to the
+		// active goal (term overlap), then confidence, then recency, and cap
+		// the listing so state accumulation cannot bloat the context.
+		goalDesc := ""
+		if g := c.activeGoal(st); g != nil {
+			goalDesc = g.Description
+		}
+		ranked := RankClaimsByGoal(claims, goalDesc)
+		shown := 0
+		eligible := 0
+		for _, cl := range ranked {
+			if cl.Status != ClaimVerified && cl.Status != ClaimContradicted {
+				continue
 			}
+			eligible++
+			if shown >= c.MaxClaims {
+				continue
+			}
+			shown++
+			fmt.Fprintf(&b, "- [%s] %s %s %s (confidence %.0f%%)\n", cl.Status, cl.Subject, cl.Predicate, cl.Object, cl.Confidence*100)
+		}
+		if shown < eligible {
+			fmt.Fprintf(&b, "… %d more claim(s)\n", eligible-shown)
 		}
 	}
 
@@ -106,6 +127,58 @@ func (c *Compiler) activeGoal(st *State) *Goal {
 		}
 	}
 	return best
+}
+
+// RankClaimsByGoal orders claims by relevance to the goal description (token
+// overlap across subject/predicate/object), then confidence, then recency.
+// This is the cross-session memory activation step: prior sessions' verified
+// conclusions surface first when they concern the current task.
+func RankClaimsByGoal(claims []*Claim, goalDesc string) []*Claim {
+	terms := goalTerms(goalDesc)
+	out := append([]*Claim(nil), claims...)
+	sort.SliceStable(out, func(i, j int) bool {
+		si, sj := claimScore(out[i], terms), claimScore(out[j], terms)
+		if si == sj {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return si > sj
+	})
+	return out
+}
+
+func claimScore(cl *Claim, terms []string) float64 {
+	score := cl.Confidence * 0.3
+	if cl.Status == ClaimVerified {
+		score += 0.5 // verified conclusions outrank contradicted ones
+	}
+	text := strings.ToLower(cl.Subject + " " + cl.Predicate + " " + cl.Object)
+	for _, t := range terms {
+		if strings.Contains(text, t) {
+			score += 1
+		}
+	}
+	score += recencyScore(cl.UpdatedAt) * 0.2
+	return score
+}
+
+func recencyScore(t time.Time) float64 {
+	days := time.Since(t).Hours() / 24
+	if days >= 30 {
+		return 0
+	}
+	return 1 - days/30
+}
+
+func goalTerms(s string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+	}) {
+		if len(f) >= 3 {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // DescribeAction renders a human-readable action for logs and events.

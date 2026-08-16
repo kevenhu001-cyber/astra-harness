@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -103,7 +102,7 @@ func (p *OpenAICompatible) Stream(ctx context.Context, req *Request) (<-chan Str
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s: HTTP %d: %s", p.IDName, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, NewHTTPStatusError(p.IDName, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	events := make(chan StreamEvent, 8)
 	go func() {
@@ -127,11 +126,10 @@ func (p *OpenAICompatible) Stream(ctx context.Context, req *Request) (<-chan Str
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				ev := StreamEvent{FinishReason: "stop"}
-				select {
-				case events <- ev:
-				case <-ctx.Done():
-				}
+				// [DONE] is the terminator, not a chunk: the real finish_reason
+				// was already emitted in the final choices chunk. Emitting a
+				// synthetic "stop" here would mask tool_calls / length /
+				// content_filter finishes.
 				return
 			}
 			var chunk struct {

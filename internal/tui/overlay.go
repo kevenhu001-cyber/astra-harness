@@ -728,11 +728,52 @@ func overlayTree(e *engine.Engine) *overlay {
 	return &overlay{title: "Project tree", body: b.String()}
 }
 
-func overlayMcp() *overlay {
-	return &overlay{
-		title: "MCP servers",
-		body: "No MCP servers configured.\n\nAstra supports the Model Context Protocol as an external tool adapter.\n\nAdd servers later via ~/.config/astra/mcp.json:\n\n{\n  \"servers\": {\n    \"github\": {\n      \"type\": \"stdio\",\n      \"command\": \"mcp-github\",\n      \"args\": []\n    }\n  }\n}\n\n(Placeholder — full MCP adapter ships in a follow-up.)",
+func overlayMcp(e *engine.Engine) *overlay {
+	configured := e.Config.McpServers
+	connected := e.McpToolNames()
+	if len(configured) == 0 {
+		return &overlay{
+			title: "MCP servers",
+			body: "No MCP servers configured.\n\nAstra supports the Model Context Protocol over stdio; configured\nservers' tools are exposed to the model as mcp__<server>__<tool>.\n\nAdd servers to .astra/config.json:\n\n{\n  \"mcp_servers\": [\n    {\n      \"id\": \"github\",\n      \"command\": \"mcp-github\",\n      \"args\": []\n    }\n  ]\n}\n\nThen restart Astra (or /init to reconnect).",
+		}
 	}
+	var b strings.Builder
+	for _, sc := range configured {
+		status := styleError.Render("✗ not connected")
+		for _, t := range connected {
+			if strings.HasPrefix(t, sc.ID+"/") {
+				status = styleOk.Render("✓ connected")
+				break
+			}
+		}
+		kind := sc.Type
+		if kind == "" {
+			kind = "stdio"
+		}
+		fmt.Fprintf(&b, "%s  %s  [%s]\n", sc.ID, status, kind)
+		if kind == "http" {
+			fmt.Fprintf(&b, "  url: %s\n", sc.URL)
+		} else {
+			fmt.Fprintf(&b, "  command: %s %s\n", sc.Command, strings.Join(sc.Args, " "))
+		}
+		disabled := 0
+		for _, tc := range sc.Tools {
+			if tc.Disabled {
+				disabled++
+			}
+		}
+		if disabled > 0 {
+			fmt.Fprintf(&b, "  disabled tools: %d\n", disabled)
+		}
+	}
+	if len(connected) > 0 {
+		b.WriteString("\n" + styleTitle.Render("Exposed tools") + "\n")
+		for _, t := range connected {
+			fmt.Fprintf(&b, "  mcp__%s\n", t)
+		}
+	}
+	b.WriteString("\nMCP tool calls are gated by the EXECUTE permission; disabled tools\nare not exposed and dispatch is refused.")
+	return &overlay{title: "MCP servers", body: b.String()}
 }
 
 func overlayTasks(e *engine.Engine) *overlay {

@@ -1,17 +1,21 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kevenhu001-cyber/astra-harness/internal/core"
 	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
+	"github.com/kevenhu001-cyber/astra-harness/internal/mcp"
 )
 
 // ToolResult is the normalized outcome of a tool call.
@@ -22,6 +26,32 @@ type ToolResult struct {
 }
 
 const toolOutputLimit = 30000
+
+// mcpToolPrefix namespaces MCP tools so collisions with built-ins are
+// impossible (Codex uses a comparable prefix scheme for MCP tool exposure).
+const mcpToolPrefix = "mcp__"
+
+// AllToolDefs returns the built-in tools plus every connected MCP server's
+// tools, namespaced as mcp__<server-id>__<tool>.
+func (e *Engine) AllToolDefs() []llm.ToolDef {
+	defs := ToolDefs()
+	e.mu.Lock()
+	clients := append([]mcp.ToolClient(nil), e.mcpClients...)
+	e.mu.Unlock()
+	for _, c := range clients {
+		for _, t := range c.ToolDefs() {
+			if e.mcpToolDisabled(c.ID(), t.Name) {
+				continue
+			}
+			defs = append(defs, llm.ToolDef{
+				Name:        mcpToolPrefix + c.ID() + "__" + t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			})
+		}
+	}
+	return defs
+}
 
 // ToolDefs returns the tool schema exposed to the model.
 func ToolDefs() []llm.ToolDef {
@@ -132,6 +162,16 @@ func ToolDefs() []llm.ToolDef {
 			},
 		},
 		{
+			Name: "apply_patch", Description: "Apply a Codex-style patch to one or more files. Format: *** Begin Patch / *** Update File: <path> / @@ context / -old line / +new line / *** Add File: <path> (lines prefixed with +) / *** Delete File: <path> / *** Move to: <newpath> / *** End of File / *** End Patch. Use -/+ lines with enough surrounding context for a unique match; multiple files in one patch.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"patch": map[string]any{"type": "string", "description": "the full patch text between *** Begin Patch and *** End Patch"},
+				},
+				"required": []string{"patch"},
+			},
+		},
+		{
 			Name: "ask_user", Description: "Ask the human operator a question when information or a decision is needed.",
 			Parameters: map[string]any{
 				"type":       "object",
@@ -149,13 +189,27 @@ func ToolDefs() []llm.ToolDef {
 	}
 }
 
-// ExecuteTool dispatches a tool call.
+// ExecuteTool dispatches a tool call, gated by PreToolUse hooks and observed
+// by PostToolUse hooks.
 func (e *Engine) ExecuteTool(ctx context.Context, name, argsJSON string) ToolResult {
 	var args map[string]any
 	if strings.TrimSpace(argsJSON) != "" {
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return ToolResult{Success: false, Output: fmt.Sprintf("invalid arguments JSON: %v", err)}
 		}
+	}
+	if denied, reason := e.runHooks(HookPreToolUse, name, map[string]any{"tool": name, "arguments": args}); denied {
+		return ToolResult{Success: false, Output: "hook denied: " + reason}
+	}
+	res := e.dispatchTool(ctx, name, args)
+	e.runHooks(HookPostToolUse, name, map[string]any{"tool": name, "success": res.Success, "output": res.Output})
+	return res
+}
+
+// dispatchTool routes a parsed tool call to its implementation.
+func (e *Engine) dispatchTool(ctx context.Context, name string, args map[string]any) ToolResult {
+	if strings.HasPrefix(name, mcpToolPrefix) {
+		return e.executeMcpTool(ctx, name, args)
 	}
 	switch name {
 	case "search":
@@ -181,6 +235,8 @@ func (e *Engine) ExecuteTool(ctx context.Context, name, argsJSON string) ToolRes
 	case "git_log":
 		n := argInt(args, "n", 10)
 		return ToolResult{Success: true, Output: e.Git.Log(n)}
+	case "apply_patch":
+		return e.toolApplyPatch(args)
 	case "ask_user":
 		return e.toolAskUser(args)
 	case "verify":
@@ -188,6 +244,88 @@ func (e *Engine) ExecuteTool(ctx context.Context, name, argsJSON string) ToolRes
 	default:
 		return ToolResult{Success: false, Output: "unknown tool: " + name}
 	}
+}
+
+// toolApplyPatch validates permissions for every file the patch touches (WRITE
+// for add/update, DELETE for delete), then applies the hunks in order.
+func (e *Engine) toolApplyPatch(args map[string]any) ToolResult {
+	patch := argString(args, "patch", "")
+	if strings.TrimSpace(patch) == "" {
+		return ToolResult{Success: false, Output: "patch is required"}
+	}
+	hunks, err := parsePatch(patch)
+	if err != nil {
+		return ToolResult{Success: false, Output: "invalid patch: " + err.Error()}
+	}
+	seen := map[string]bool{}
+	for _, h := range hunks {
+		if seen[h.path] {
+			continue
+		}
+		seen[h.path] = true
+		if _, err := e.Perm.SafePath(h.path); err != nil {
+			return ToolResult{Success: false, Output: err.Error()}
+		}
+		kind := PermWrite
+		if h.kind == "delete" {
+			kind = PermDelete
+		}
+		if allowed, err := e.Perm.Check(kind, h.path, "apply_patch", ""); err != nil || !allowed {
+			if err != nil {
+				return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
+			}
+			return ToolResult{Success: false, Output: "permission denied by operator"}
+		}
+	}
+	var outs []string
+	for _, h := range hunks {
+		res := e.applyHunk(h)
+		if !res.Success {
+			return res
+		}
+		outs = append(outs, res.Output)
+	}
+	return ToolResult{Success: true, Output: strings.Join(outs, "\n")}
+}
+
+// executeMcpTool resolves mcp__<server>__<tool> and forwards the call to the
+// connected server. The call is gated by the EXECUTE permission so operators
+// keep control over arbitrary third-party tool execution.
+func (e *Engine) executeMcpTool(ctx context.Context, name string, args map[string]any) ToolResult {
+	rest := strings.TrimPrefix(name, mcpToolPrefix)
+	idx := strings.Index(rest, "__")
+	if idx <= 0 {
+		return ToolResult{Success: false, Output: "malformed mcp tool name: " + name}
+	}
+	serverID := rest[:idx]
+	toolName := rest[idx+2:]
+	if e.mcpToolDisabled(serverID, toolName) {
+		return ToolResult{Success: false, Output: fmt.Sprintf("mcp tool %s.%s is disabled by config", serverID, toolName)}
+	}
+	e.mu.Lock()
+	var client mcp.ToolClient
+	for _, c := range e.mcpClients {
+		if c.ID() == serverID {
+			client = c
+			break
+		}
+	}
+	e.mu.Unlock()
+	if client == nil {
+		return ToolResult{Success: false, Output: fmt.Sprintf("mcp server %q is not connected", serverID)}
+	}
+	allowed, err := e.Perm.Check(PermExecute, "mcp:"+serverID+":"+toolName, "call MCP tool", "")
+	if err != nil {
+		return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
+	}
+	if !allowed {
+		return ToolResult{Success: false, Output: "permission denied by operator"}
+	}
+	res, err := client.CallTool(ctx, toolName, args)
+	if err != nil {
+		return ToolResult{Success: false, Output: "mcp call failed: " + err.Error()}
+	}
+	return ToolResult{Success: !res.IsError, Output: res.Text}
 }
 
 func (e *Engine) toolSearch(ctx context.Context, args map[string]any) ToolResult {
@@ -278,6 +416,12 @@ func (e *Engine) toolEdit(args map[string]any) ToolResult {
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
+	if allowed, err := e.Perm.Check(PermWrite, relPath(e.Root, path), "edit_file", ""); err != nil || !allowed {
+		if err != nil {
+			return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
+		}
+		return ToolResult{Success: false, Output: "permission denied by operator"}
+	}
 	old := argString(args, "old_string", "")
 	newStr := argString(args, "new_string", "")
 	if old == "" {
@@ -320,6 +464,12 @@ func (e *Engine) toolWrite(args map[string]any) ToolResult {
 	path, err := e.Perm.SafePath(argString(args, "path", ""))
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
+	}
+	if allowed, err := e.Perm.Check(PermWrite, relPath(e.Root, path), "write_file", ""); err != nil || !allowed {
+		if err != nil {
+			return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
+		}
+		return ToolResult{Success: false, Output: "permission denied by operator"}
 	}
 	content := argString(args, "content", "")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -404,7 +554,16 @@ func (e *Engine) toolVerify(ctx context.Context, args map[string]any) ToolResult
 	return e.Verify(ctx)
 }
 
-// runShell executes a command with permission checking and evidence capture.
+// streamBatchSize coalesces stdout/stderr lines into chunks of this size
+// before emitting EvToolStream, bounding the UI event rate for chatty tools.
+const streamBatchSize = 10
+
+// runShell executes a command with permission checking, evidence capture and
+// live output streaming (Codex exec-server style): stdout/stderr lines are
+// batched and emitted as EvToolStream events while the process runs, so the
+// TUI and headless CLI show partial output instead of waiting for exit. The
+// process is bound to ctx (cancelled by ctrl+c in the TUI) and an optional
+// timeout.
 func (e *Engine) runShell(ctx context.Context, command, desc string, timeout time.Duration) ToolResult {
 	allowed, err := e.Perm.Check(PermExecute, command, desc, command)
 	if err != nil {
@@ -422,19 +581,72 @@ func (e *Engine) runShell(ctx context.Context, command, desc string, timeout tim
 	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	cmd.Dir = e.Root
 	cmd.Env = os.Environ()
-	output, err := cmd.CombinedOutput()
-	out := string(output)
-	if len(out) > toolOutputLimit {
-		out = out[:toolOutputLimit] + "\n...[truncated]"
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return ToolResult{Success: false, Output: err.Error()}
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return ToolResult{Success: false, Output: err.Error()}
+	}
+	if err := cmd.Start(); err != nil {
+		return ToolResult{Success: false, Output: err.Error()}
+	}
+
+	var (
+		outMu sync.Mutex
+		out   strings.Builder
+		wg    sync.WaitGroup
+	)
+	pump := func(r io.Reader) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		var batch strings.Builder
+		flush := func() {
+			if batch.Len() == 0 {
+				return
+			}
+			chunk := batch.String()
+			outMu.Lock()
+			out.WriteString(chunk)
+			outMu.Unlock()
+			e.emit(EvToolStream, map[string]any{"chunk": chunk})
+			batch.Reset()
+		}
+		lines := 0
+		for sc.Scan() {
+			batch.WriteString(sc.Text())
+			batch.WriteString("\n")
+			lines++
+			if lines >= streamBatchSize {
+				flush()
+				lines = 0
+			}
+		}
+		flush() // trailing partial batch
+	}
+	wg.Add(2)
+	go pump(stdout)
+	go pump(stderr)
+	waitErr := cmd.Wait()
+	wg.Wait() // drain anything still in flight after exit
+
+	outMu.Lock()
+	full := out.String()
+	outMu.Unlock()
+	truncated := full
+	if len(truncated) > toolOutputLimit {
+		truncated = truncated[:toolOutputLimit] + "\n...[truncated]"
 	}
 	res := ToolResult{
-		Success:  err == nil,
-		Output:   out,
-		Metadata: map[string]string{"command": command, "exit_code": exitCodeString(err)},
+		Success:  waitErr == nil,
+		Output:   truncated,
+		Metadata: map[string]string{"command": command, "exit_code": exitCodeString(waitErr)},
 	}
 	kind := EvidenceKindForCommand(command)
-	e.recordEvidence(kind, desc, out, res.Success, map[string]string{
-		"command": command, "exit_code": exitCodeString(err),
+	e.recordEvidence(kind, desc, truncated, res.Success, map[string]string{
+		"command": command, "exit_code": exitCodeString(waitErr),
 	})
 	return res
 }
@@ -480,6 +692,9 @@ func (e *Engine) Verify(ctx context.Context) ToolResult {
 	} else {
 		fmt.Fprintln(&b, "BUILD: no build command detected")
 	}
+	// Fresh claims were recorded at the current code state; anything older
+	// becomes STALE (also covers `astra verify` run outside a session).
+	e.ReconcileClaims()
 	return ToolResult{Success: ok, Output: strings.TrimSpace(b.String())}
 }
 

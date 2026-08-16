@@ -22,6 +22,42 @@ type ProviderConfig struct {
 	Models    []string `json:"models"`
 }
 
+// McpServerConfig describes one MCP server (mirrors Codex's
+// [mcp_servers.<name>] config): stdio (command + args + env) or HTTP
+// (url + headers), with optional per-tool allow/deny under Tools.
+type McpServerConfig struct {
+	ID      string            `json:"id"`
+	Type    string            `json:"type,omitempty"` // "stdio" (default) | "http"
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// Tools maps tool names to per-tool policy (e.g. Disabled).
+	Tools map[string]McpToolConfig `json:"tools,omitempty"`
+}
+
+// McpToolConfig is the per-tool policy for an MCP server (Codex
+// [mcp_servers.<name>.tools.<tool>]).
+type McpToolConfig struct {
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// HookConfig is a command-based lifecycle hook (Codex hook_runtime.rs
+// subset): run before/after tool calls and around compaction. The command is
+// executed via sh -c with a JSON payload on stdin. For blocking events
+// (PreToolUse / PreCompact) a non-zero exit denies the action.
+type HookConfig struct {
+	// Event is one of: PreToolUse, PostToolUse, PreCompact, PostCompact.
+	Event string `json:"event"`
+	// Tools restricts the hook to specific tool names; empty matches all.
+	Tools []string `json:"tools,omitempty"`
+	// Command is the shell command to run.
+	Command string `json:"command"`
+	// TimeoutSeconds bounds the hook; default 10.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
 // Config is the merged Astra configuration.
 type Config struct {
 	Providers        []ProviderConfig `json:"providers"`
@@ -35,7 +71,22 @@ type Config struct {
 	SmallModel       string           `json:"small_model,omitempty"`
 	ReasoningEffort  string           `json:"reasoning_effort,omitempty"` // low | medium | high | xhigh
 	RecentModels     []string         `json:"recent_models,omitempty"`
+	// MaxProjectDocBytes caps the total AGENTS.md content injected into the
+	// system prompt (Codex: project_doc_max_bytes, default 32 KiB).
+	MaxProjectDocBytes int `json:"max_project_doc_bytes,omitempty"`
+	// McpServers lists stdio MCP servers whose tools are exposed to the model
+	// under the mcp__<server-id>__<tool> namespace.
+	McpServers []McpServerConfig `json:"mcp_servers,omitempty"`
+	// Hooks lists lifecycle hooks (PreToolUse / PostToolUse / PreCompact /
+	// PostCompact).
+	Hooks []HookConfig `json:"hooks,omitempty"`
+	// AuthServer is the Astra account/auth server base URL used by
+	// `astra login` (device flow). Overridable with ASTRA_AUTH_SERVER.
+	AuthServer string `json:"auth_server,omitempty"`
 }
+
+// defaultProjectDocBytes mirrors Codex's AGENTS_MD_MAX_BYTES (32 KiB).
+const defaultProjectDocBytes = 32 * 1024
 
 func defaultConfig() *Config {
 	autoVerify := true
@@ -60,12 +111,13 @@ func defaultConfig() *Config {
 				BaseURL: "http://localhost:11434/v1", APIKeyEnv: "OLLAMA_API_KEY",
 				Models: []string{"llama3.1", "qwen2.5-coder"}},
 		},
-		PermissionMode:   "ask",
-		MaxIterations:    20,
-		MaxContextTokens: 160000,
-		AutoVerify:       &autoVerify,
-		TimeoutSeconds:   120,
-		SmallModel:       "",
+		PermissionMode:     "ask",
+		MaxIterations:      20,
+		MaxContextTokens:   160000,
+		AutoVerify:         &autoVerify,
+		TimeoutSeconds:     120,
+		SmallModel:         "",
+		MaxProjectDocBytes: defaultProjectDocBytes,
 	}
 }
 
@@ -86,6 +138,9 @@ func LoadConfig(root string) (*Config, error) {
 	}
 	if v := os.Getenv("ASTRA_PERMISSION_MODE"); v != "" {
 		cfg.PermissionMode = v
+	}
+	if v := os.Getenv("ASTRA_AUTH_SERVER"); v != "" {
+		cfg.AuthServer = v
 	}
 	if cfg.PermissionMode == "" {
 		cfg.PermissionMode = "ask"
@@ -163,6 +218,15 @@ func mergeFile(cfg *Config, path string) error {
 	}
 	if merged.RecentModels != nil {
 		cfg.RecentModels = merged.RecentModels
+	}
+	if merged.MaxProjectDocBytes > 0 {
+		cfg.MaxProjectDocBytes = merged.MaxProjectDocBytes
+	}
+	if merged.McpServers != nil {
+		cfg.McpServers = merged.McpServers
+	}
+	if merged.Hooks != nil {
+		cfg.Hooks = merged.Hooks
 	}
 	return nil
 }

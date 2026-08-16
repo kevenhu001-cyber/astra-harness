@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/kevenhu001-cyber/astra-harness/internal/core"
 	"github.com/kevenhu001-cyber/astra-harness/internal/knowledge"
 	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
+	"github.com/kevenhu001-cyber/astra-harness/internal/mcp"
 )
 
 // EventType is the UI/observer event taxonomy.
@@ -26,6 +28,7 @@ const (
 	EvAssistantStart EventType = "assistant_start"
 	EvAssistantEnd   EventType = "assistant_end"
 	EvToolStart      EventType = "tool_start"
+	EvToolStream     EventType = "tool_stream"
 	EvToolEnd        EventType = "tool_end"
 	EvPermission     EventType = "permission"
 	EvAskUser        EventType = "ask_user"
@@ -71,6 +74,8 @@ type Engine struct {
 	permChans map[string]chan PermissionDecision
 	cancel    context.CancelFunc
 	running   bool
+
+	mcpClients []mcp.ToolClient
 }
 
 // NewEngine wires store, index, router and permissions for a workspace.
@@ -106,7 +111,100 @@ func NewEngine(root string, cfg *Config) (*Engine, error) {
 	}
 	e.Perm = NewPermissionManager(root, cfg.PermissionMode, e.promptPermission)
 	e.initProject()
+	e.startMcpServers()
 	return e, nil
+}
+
+// Close releases engine resources (MCP server processes and the state store).
+func (e *Engine) Close() error {
+	e.mu.Lock()
+	clients := e.mcpClients
+	e.mcpClients = nil
+	e.mu.Unlock()
+	for _, c := range clients {
+		_ = c.Close()
+	}
+	if e.Store != nil {
+		return e.Store.Close()
+	}
+	return nil
+}
+
+
+// startMcpServers spawns configured stdio MCP servers and records their tools.
+// A failing or unresponsive server is reported as a system event but does not
+// abort startup (each handshake is bounded by mcpStartTimeout).
+const mcpStartTimeout = 15 * time.Second
+
+func (e *Engine) startMcpServers() {
+	for _, sc := range e.Config.McpServers {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpStartTimeout)
+		mcfg := mcp.ServerConfig{
+			ID: sc.ID, Type: sc.Type, Command: sc.Command, Args: sc.Args,
+			Env: sc.Env, URL: sc.URL, Headers: sc.Headers,
+		}
+		var client mcp.ToolClient
+		var err error
+		if sc.Type == "http" {
+			client, err = mcp.StartHTTP(ctx, mcfg)
+		} else {
+			client, err = mcp.Start(ctx, mcfg)
+		}
+		cancel()
+		if err != nil {
+			e.emit(EvSystem, fmt.Sprintf("mcp: server %q failed to start: %s", sc.ID, firstLine(err.Error())))
+			continue
+		}
+		tools, err := client.ListTools()
+		if err != nil {
+			e.emit(EvSystem, fmt.Sprintf("mcp: server %q tools/list failed: %s", sc.ID, firstLine(err.Error())))
+			_ = client.Close()
+			continue
+		}
+		exposed := 0
+		for _, t := range tools {
+			if !e.mcpToolDisabled(sc.ID, t.Name) {
+				exposed++
+			}
+		}
+		if exposed == 0 {
+			e.emit(EvSystem, fmt.Sprintf("mcp: server %q exposed no enabled tools", sc.ID))
+			_ = client.Close()
+			continue
+		}
+		e.mu.Lock()
+		e.mcpClients = append(e.mcpClients, client)
+		e.mu.Unlock()
+		e.emit(EvSystem, fmt.Sprintf("mcp: connected %q with %d tool(s) (%d enabled)", sc.ID, len(tools), exposed))
+	}
+}
+
+// mcpToolDisabled reports whether a tool is disabled by per-tool config
+// (Codex [mcp_servers.<name>.tools.<tool>].disabled).
+func (e *Engine) mcpToolDisabled(serverID, tool string) bool {
+	for _, sc := range e.Config.McpServers {
+		if sc.ID != serverID {
+			continue
+		}
+		if t, ok := sc.Tools[tool]; ok && t.Disabled {
+			return true
+		}
+	}
+	return false
+}
+
+// McpToolNames returns "server-id/tool" pairs for all connected servers
+// (used by /mcp and /debug overlays).
+func (e *Engine) McpToolNames() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, c := range e.mcpClients {
+		for _, name := range c.ToolNames() {
+			out = append(out, c.ID()+"/"+name)
+		}
+	}
+	return out
 }
 
 func (e *Engine) initProject() {
@@ -162,6 +260,13 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 	e.addMessage(llm.RoleUser, prompt)
 	e.saveSession()
 
+	// Re-evaluate claim/evidence validity against the current working tree
+	// before the model sees the compiled state (evidence invalidation).
+	e.ReconcileClaims()
+	if msg := e.memorySummary(); msg != "" {
+		e.emit(EvSystem, msg)
+	}
+
 	maxIter := e.Config.MaxIterations
 	if maxIter <= 0 {
 		maxIter = 20
@@ -172,6 +277,15 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		if err := runCtx.Err(); err != nil {
 			lastErr = err
 			break
+		}
+		// Auto-compact when the estimated context approaches the token budget
+		// (Codex: CompactionTrigger::Auto in compact_token_budget.rs).
+		if e.shouldAutoCompact() {
+			e.emit(EvSystem, fmt.Sprintf("context at ~%d tokens — auto-compacting", e.estimateTokens()))
+			if msg := e.Compact(); msg != "nothing to compact" {
+				e.emit(EvSystem, msg)
+				e.saveSession()
+			}
 		}
 		content, calls, finish, err := e.callModel(runCtx)
 		if err != nil {
@@ -236,32 +350,88 @@ func (e *Engine) Stop() {
 	e.mu.Unlock()
 }
 
+// retryableError marks a model-call failure that is safe to retry (transient
+// network or HTTP 429/5xx) and that occurred before any output was produced.
+type retryableError struct{ err error }
+
+func (e retryableError) Error() string { return e.err.Error() }
+func (e retryableError) Unwrap() error  { return e.err }
+
+// isRetryable reports whether a model-call failure can be retried with
+// backoff (Codex: util::backoff). Deterministic failures (bad requests,
+// auth, no provider) are not retried.
+func isRetryable(err error) bool {
+	var re retryableError
+	if errors.As(err, &re) {
+		var he *llm.HTTPStatusError
+		if errors.As(re.err, &he) {
+			return he.IsRetryable()
+		}
+		return true // request never reached the API (network-level failure)
+	}
+	return false
+}
+
+// callModel runs the model with retry-and-backoff for transient failures.
 func (e *Engine) callModel(ctx context.Context) (string, []llm.ToolCall, string, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		content, calls, finish, err := e.callModelOnce(ctx)
+		if err == nil {
+			return content, calls, finish, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			break
+		}
+		if attempt >= maxAttempts {
+			break
+		}
+		delay := time.Duration(1<<(attempt-1)) * time.Second
+		e.emit(EvSystem, fmt.Sprintf("transient model error (attempt %d/%d), retrying in %s: %s",
+			attempt, maxAttempts, delay, firstLine(err.Error())))
+		select {
+		case <-ctx.Done():
+			return "", nil, "", ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return "", nil, "", lastErr
+}
+
+func (e *Engine) callModelOnce(ctx context.Context) (string, []llm.ToolCall, string, error) {
 	e.emit(EvAssistantStart, map[string]any{"model": e.Model})
 	req := llm.Request{
 		Model:       e.Model,
 		System:      e.buildSystemPrompt(),
 		Messages:    e.messages,
-		Tools:       ToolDefs(),
+		Tools:       e.AllToolDefs(),
 		MaxTokens:   4096,
 		Temperature: 0.2,
 	}
 	stream, err := e.Provider.Stream(ctx, &req)
 	if err != nil {
-		return "", nil, "", err
+		return "", nil, "", retryableError{err}
 	}
 	var content strings.Builder
 	acc := map[int]*llm.ToolCall{}
 	var finish string
+	emitted := false
 	for ev := range stream {
 		if ev.Error != nil {
-			return "", nil, "", ev.Error
+			if emitted {
+				return content.String(), nil, finish, ev.Error
+			}
+			return "", nil, "", retryableError{ev.Error}
 		}
 		if ev.Content != "" {
+			emitted = true
 			content.WriteString(ev.Content)
 			e.emit(EvDelta, ev.Content)
 		}
 		for _, d := range ev.ToolCalls {
+			emitted = true
 			tc := acc[d.Index]
 			if tc == nil {
 				tc = &llm.ToolCall{}
@@ -307,15 +477,21 @@ CORE PRINCIPLES
 
 TOOL DISCIPLINE
 - Use search/read before editing; use git_status/git_diff to understand changes.
-- Use edit_file with precise, unique old_string context. Use run_tests/run_build/verify to collect evidence.
+- Prefer apply_patch for code edits (context-matched diff hunks, multiple files per call); fall back to edit_file for tiny single replacements.
+- Use run_tests/run_build/verify to collect evidence.
 - If a test fails, read the failure, investigate, fix, and re-run.
 - Use ask_user only when a decision genuinely requires the human operator.
 
 `)
+	if docs := e.LoadProjectInstructions(); docs != "" {
+		b.WriteString("=== PROJECT INSTRUCTIONS (AGENTS.md) ===\n")
+		b.WriteString(docs)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("=== COMPILED KNOWLEDGE STATE (query result, not chat history) ===\n")
 	b.WriteString(e.CompilerOutput())
 	b.WriteString("\n=== TOOLS ===\n")
-	for _, t := range ToolDefs() {
+	for _, t := range e.AllToolDefs() {
 		fmt.Fprintf(&b, "- %s: %s\n", t.Name, t.Description)
 	}
 	return b.String()
@@ -332,6 +508,113 @@ func (e *Engine) CompilerOutput() string {
 	}
 	compiler := core.NewCompiler()
 	return compiler.Compile(e.Store.State, recent)
+}
+
+// agentsMDCandidates are the filenames scanned per directory, in priority
+// order (local override first), mirroring Codex agents_md.rs.
+var agentsMDCandidates = []string{"AGENTS.override.md", "AGENTS.md"}
+
+// agentsMDSeparator joins multiple project docs, matching Codex's separator.
+const agentsMDSeparator = "\n\n--- project-doc ---\n\n"
+
+// LoadProjectInstructions collects project documentation from the project
+// root down to the current working directory, concatenated root-first with a
+// separator, capped at MaxProjectDocBytes. Mirrors Codex's AGENTS.md
+// discovery (codex-rs/core/src/agents_md.rs): every directory between root
+// and cwd (inclusive) contributes its first matching candidate file.
+func (e *Engine) LoadProjectInstructions() string {
+	maxBytes := e.Config.MaxProjectDocBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultProjectDocBytes
+	}
+	root := filepath.Clean(e.Root)
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = root
+	}
+	cwd = filepath.Clean(cwd)
+
+	// Collect the chain cwd → … → root, then reverse so root comes first.
+	// When cwd is outside the project root, fall back to scanning root only.
+	var dirs []string
+	if rel, relErr := filepath.Rel(root, cwd); relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		dirs = []string{root}
+	} else {
+		cur := cwd
+		for {
+			dirs = append(dirs, cur)
+			if cur == root {
+				break
+			}
+			parent := filepath.Dir(cur)
+			if parent == cur {
+				break // walked past the project root without finding it
+			}
+			cur = parent
+		}
+	}
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+
+	var parts []string
+	remaining := maxBytes
+	for _, dir := range dirs {
+		if remaining <= 0 {
+			break
+		}
+		for _, name := range agentsMDCandidates {
+			p := filepath.Join(dir, name)
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			rel, _ := filepath.Rel(e.Root, p)
+			header := fmt.Sprintf("# %s\n\n", filepath.ToSlash(rel))
+			if len(header) >= remaining {
+				break
+			}
+			content := string(data)
+			if space := remaining - len(header); len(content) > space {
+				content = content[:space]
+			}
+			remaining -= len(header) + len(content)
+			parts = append(parts, header+content)
+			break // only the first matching candidate per directory
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, agentsMDSeparator)
+}
+
+// autoCompactRatio triggers compaction at 80% of the configured budget.
+const autoCompactRatio = 0.8
+
+// estimateTokens approximates the model context size in tokens (chars/4) so
+// we can trigger compaction before hitting the budget.
+func (e *Engine) estimateTokens() int {
+	total := len(e.buildSystemPrompt())
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, m := range e.messages {
+		total += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Arguments)
+		}
+	}
+	return total / 4
+}
+
+// shouldAutoCompact reports whether the estimated context exceeds the
+// configured budget threshold (Codex: CompactionTrigger::Auto).
+func (e *Engine) shouldAutoCompact() bool {
+	budget := e.Config.MaxContextTokens
+	if budget <= 0 {
+		return false
+	}
+	return e.estimateTokens() > int(float64(budget)*autoCompactRatio)
 }
 
 func (e *Engine) ensureGoal(prompt string) *core.Goal {
@@ -513,8 +796,12 @@ func (e *Engine) recordTestClaim(success bool, command string) {
 		Source: "verify", CodeState: e.Git.StateHash(),
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
-	// Link recent evidence produced by the same command.
+	// Link recent evidence produced by the same command, skipping records
+	// invalidated by code changes (STALE).
 	for _, ev := range e.Store.State.Evidence {
+		if ev.Status == core.EvidenceStale {
+			continue
+		}
 		if strings.Contains(ev.Source, command) || ev.Metadata["command"] == command {
 			c.EvidenceIDs = append(c.EvidenceIDs, ev.ID)
 		}
@@ -557,6 +844,62 @@ func (e *Engine) recordFileChange(path, diff string) {
 	if !hasTest {
 		e.discoverUnknown(fmt.Sprintf("No test coverage identified for modified file %s", path), 0.5, 0.3, 0.6, "edit")
 	}
+	// The working tree changed: previously recorded evidence is no longer
+	// valid for the current code state.
+	e.ReconcileClaims()
+}
+
+// memorySummary describes the durable knowledge the current run inherits from
+// prior sessions (cross-session memory activation). Empty when there is
+// nothing to surface.
+func (e *Engine) memorySummary() string {
+	st := e.Store.State
+	if len(st.Claims) == 0 && len(st.Unknowns) == 0 {
+		return ""
+	}
+	verified := 0
+	for _, c := range st.Claims {
+		if c.Status == core.ClaimVerified {
+			verified++
+		}
+	}
+	// Surface the most goal-relevant verified conclusions, if any.
+	top := ""
+	if g := e.Store.ActiveGoal(); g != nil && verified > 0 {
+		for _, c := range core.RankClaimsByGoal(st.Claims, g.Description) {
+			if c.Status != core.ClaimVerified {
+				continue
+			}
+			top = fmt.Sprintf(" · top: %s %s %s", c.Subject, c.Predicate, c.Object)
+			break
+		}
+	}
+	return fmt.Sprintf("memory loaded from state: %d claim(s) (%d verified), %d unknown(s), %d evidence%s",
+		len(st.Claims), verified, len(st.Unknowns), len(st.Evidence), top)
+}
+
+// ReconcileClaims applies the staleness rules from core.ReconcileState against
+// the current git state hash and persists the transitions through the event
+// log. Returns the number of records flagged STALE.
+func (e *Engine) ReconcileClaims() int {
+	evidence, claims := core.ReconcileState(e.Git.StateHash(), e.Store.State)
+	changed := 0
+	for _, ev := range evidence {
+		ev.Status = core.EvidenceStale
+		if e.Store.UpdateEvidence(ev) == nil {
+			changed++
+		}
+	}
+	for _, c := range claims {
+		c.Status = core.ClaimStale
+		if e.Store.UpdateClaim(c) == nil {
+			changed++
+		}
+	}
+	if changed > 0 {
+		e.emit(EvSystem, fmt.Sprintf("code changed — %d claim/evidence record(s) marked STALE; re-verify to refresh", changed))
+	}
+	return changed
 }
 
 func (e *Engine) createAction(tool, argsJSON string) *core.Action {
@@ -571,7 +914,7 @@ func (e *Engine) createAction(tool, argsJSON string) *core.Action {
 	switch tool {
 	case "search", "read", "list_dir", "git_status", "git_diff", "git_log":
 		a.ExpectedInfoGain, a.Cost, a.Risk = 0.5, 0.1, 0.02
-	case "edit_file", "write_file":
+	case "edit_file", "write_file", "apply_patch":
 		a.ExpectedGoalProgress, a.Cost, a.Risk = 0.35, 0.15, 0.3
 	case "run_tests", "verify":
 		a.ExpectedInfoGain, a.ExpectedGoalProgress, a.Cost, a.Risk = 0.7, 0.3, 0.35, 0.15
@@ -697,7 +1040,7 @@ func actionTypeForTool(tool string) string {
 		return core.ActionSearch
 	case "read", "list_dir", "git_status", "git_diff", "git_log":
 		return core.ActionRead
-	case "edit_file", "write_file":
+	case "edit_file", "write_file", "apply_patch":
 		return core.ActionEdit
 	case "run_tests":
 		return core.ActionRunTest
@@ -716,7 +1059,7 @@ func actionTypeForTool(tool string) string {
 
 func isFatalTool(name string) bool {
 	switch name {
-	case "edit_file", "write_file", "run_tests", "run_build", "run_command", "verify":
+	case "edit_file", "write_file", "apply_patch", "run_tests", "run_build", "run_command", "verify":
 		return true
 	default:
 		return false
@@ -775,8 +1118,12 @@ func (e *Engine) RebuildIndex() error {
 }
 
 // Compact reduces the conversation to a state-derived summary instead of
-// accumulating chat history (State Compiler principle).
+// accumulating chat history (State Compiler principle). PreCompact hooks can
+// abort the compaction; PostCompact hooks observe the summary.
 func (e *Engine) Compact() string {
+	if denied, reason := e.runHooks(HookPreCompact, "", nil); denied {
+		return "compact blocked by hook: " + reason
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(e.messages) <= 2 {
@@ -792,5 +1139,6 @@ func (e *Engine) Compact() string {
 	e.messages = []llm.Message{
 		{Role: llm.RoleUser, Content: "Task context (compacted):\n" + summary},
 	}
+	e.runHooks(HookPostCompact, "", map[string]any{"summary": truncateText(summary, 500)})
 	return "conversation compacted; context rebuilt from knowledge state"
 }

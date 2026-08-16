@@ -177,6 +177,12 @@ func (s *Store) apply(evt Event) error {
 			return err
 		}
 		st.Evidence = append(st.Evidence, &e)
+	case EvtEvidenceUpdated:
+		var e Evidence
+		if err := decode(evt.Data, &e); err != nil {
+			return err
+		}
+		upsert(&st.Evidence, &e, func(x *Evidence) bool { return x.ID == e.ID })
 	case EvtUnknownCreated:
 		var u Unknown
 		if err := decode(evt.Data, &u); err != nil {
@@ -249,6 +255,12 @@ func (s *Store) UpdateClaim(c *Claim) error {
 
 func (s *Store) AddEvidence(e *Evidence) error {
 	return s.AppendEvent(EvtEvidenceCreated, mustMap(e))
+}
+
+// UpdateEvidence replaces an existing evidence record (e.g. a VALID→STALE
+// transition). Appends an EVIDENCE_UPDATED event like every other mutation.
+func (s *Store) UpdateEvidence(e *Evidence) error {
+	return s.AppendEvent(EvtEvidenceUpdated, mustMap(e))
 }
 
 func (s *Store) AddUnknown(u *Unknown) error {

@@ -47,6 +47,10 @@ const (
 	EvidenceBrowserObservation = "BROWSER_OBSERVATION"
 )
 
+// Evidence statuses beyond the VALID/INVALID pair: STALE marks evidence
+// recorded against an older code state (see ReconcileState).
+const EvidenceStale = "STALE"
+
 // Action types from the design document.
 const (
 	ActionSearch     = "SEARCH"
@@ -183,6 +187,7 @@ const (
 	EvtClaimCreated       = "CLAIM_CREATED"
 	EvtClaimUpdated       = "CLAIM_UPDATED"
 	EvtEvidenceCreated    = "EVIDENCE_CREATED"
+	EvtEvidenceUpdated    = "EVIDENCE_UPDATED"
 	EvtUnknownCreated     = "UNKNOWN_CREATED"
 	EvtUnknownUpdated     = "UNKNOWN_UPDATED"
 	EvtActionCreated      = "ACTION_CREATED"

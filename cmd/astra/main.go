@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kevenhu001-cyber/astra-harness/internal/auth"
 	"github.com/kevenhu001-cyber/astra-harness/internal/core"
 	"github.com/kevenhu001-cyber/astra-harness/internal/engine"
 	"github.com/kevenhu001-cyber/astra-harness/internal/tui"
@@ -53,6 +54,12 @@ func main() {
 		cmdResume(args)
 	case "doctor":
 		cmdDoctor()
+	case "login":
+		cmdLogin()
+	case "logout":
+		cmdLogout()
+	case "whoami", "me":
+		cmdWhoami()
 	case "help", "-h", "--help":
 		usage()
 	case "version", "--version", "-V":
@@ -81,7 +88,15 @@ USAGE
   astra verify              run tests/build and record evidence
   astra resume <session>    resume a saved session in the TUI
   astra doctor              diagnose config, providers and tooling
+  astra login               sign in with your Astra account (device flow)
+  astra logout              sign out locally
+  astra whoami              show the signed-in account
   astra version             print version
+
+ACCOUNT
+  The login flow opens the Astra website in your browser for authorization.
+  Point it at a self-hosted auth server with the auth_server config key or
+  the ASTRA_AUTH_SERVER environment variable.
 `)
 }
 
@@ -135,7 +150,7 @@ func cmdInit(args []string) {
 	if err != nil {
 		fatal("engine: %v", err)
 	}
-	defer eng.Store.Close()
+	defer eng.Close()
 	fmt.Printf("initialized %s\n", eng.StateDir())
 	fmt.Printf("index: %s\n", eng.Index.Stats())
 	fmt.Printf("provider: %s (%s)\n", eng.ProviderID(), eng.Model)
@@ -145,7 +160,7 @@ func cmdIndex(args []string) {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	fs.Parse(args)
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	if err := eng.RebuildIndex(); err != nil {
 		fatal("index: %v", err)
 	}
@@ -154,13 +169,13 @@ func cmdIndex(args []string) {
 
 func cmdStatus() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	fmt.Println(eng.CompilerOutput())
 }
 
 func cmdState() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(eng.Store.State); err != nil {
@@ -170,7 +185,7 @@ func cmdState() {
 
 func cmdClaims() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	if len(eng.Store.State.Claims) == 0 {
 		fmt.Println("no claims")
 		return
@@ -182,7 +197,7 @@ func cmdClaims() {
 
 func cmdUnknowns() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	unknowns := core.RankUnknowns(eng.Store.State.Unknowns)
 	if len(unknowns) == 0 {
 		fmt.Println("no open unknowns")
@@ -196,7 +211,7 @@ func cmdUnknowns() {
 
 func cmdEvidence() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	if len(eng.Store.State.Evidence) == 0 {
 		fmt.Println("no evidence")
 		return
@@ -212,7 +227,7 @@ func cmdEvidence() {
 
 func cmdActions() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	actions := eng.Store.ActionsRecent(30)
 	for i := len(actions) - 1; i >= 0; i-- {
 		a := actions[i]
@@ -228,7 +243,7 @@ func cmdExplain(args []string) {
 		fatal("usage: astra explain <claim-id|unknown-id>")
 	}
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	for _, c := range eng.Store.State.Claims {
 		if c.ID == id {
 			fmt.Printf("CLAIM %s\n[%s] %s %s %s (confidence %.0f%%)\ncreated: %s\nsource: %s\n",
@@ -269,7 +284,7 @@ func printLinkedEvidence(eng *engine.Engine, ids []string) {
 
 func cmdVerify() {
 	eng, _ := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	res := eng.Verify(context.Background())
 	fmt.Println(res.Output)
 	if !res.Success {
@@ -285,7 +300,7 @@ func cmdResume(args []string) {
 		fatal("usage: astra resume <session-id>")
 	}
 	eng, cfg := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	sess, err := eng.Store.LoadSession(id)
 	if err != nil {
 		fatal("load session: %v", err)
@@ -342,7 +357,7 @@ func runHeadless(args []string) {
 		fatal("usage: astra run \"prompt\" [--yes] [--provider id] [--model name]")
 	}
 	eng, cfg := loadEngine()
-	defer eng.Store.Close()
+	defer eng.Close()
 	if permMode != "" {
 		eng.Perm.SetMode(permMode)
 		cfg.PermissionMode = permMode
@@ -374,6 +389,13 @@ func runHeadless(args []string) {
 			case engine.EvToolStart:
 				if m, ok := ev.Data.(map[string]any); ok {
 					fmt.Printf("\n\n⌘ %v\n", m["name"])
+				}
+			case engine.EvToolStream:
+				if m, ok := ev.Data.(map[string]any); ok {
+					if chunk, ok := m["chunk"].(string); ok {
+						fmt.Print(chunk)
+						os.Stdout.Sync()
+					}
 				}
 			case engine.EvToolEnd:
 				if m, ok := ev.Data.(map[string]any); ok {
@@ -464,10 +486,62 @@ func cmdDoctor() {
 	if err != nil {
 		fmt.Printf("engine:    FAIL (%v)\n", err)
 	} else {
-		defer eng.Store.Close()
+		defer eng.Close()
 		fmt.Printf("engine:    ok (model %s)\n", eng.Model)
 		fmt.Printf("index:     %s\n", eng.Index.Stats())
 	}
+}
+
+// authServer resolves the auth server base URL: env > project config > default.
+func authServer() string {
+	if v := os.Getenv("ASTRA_AUTH_SERVER"); v != "" {
+		return v
+	}
+	if root, err := os.Getwd(); err == nil {
+		if cfg, err := engine.LoadConfig(root); err == nil && cfg.AuthServer != "" {
+			return cfg.AuthServer
+		}
+	}
+	return auth.DefaultServer
+}
+
+func cmdLogin() {
+	server := authServer()
+	fmt.Printf("signing in to %s\n", server)
+	cred, err := auth.Login(context.Background(), server, os.Stdout)
+	if err != nil {
+		fatal("login: %v", err)
+	}
+	if err := auth.SaveCredential(cred); err != nil {
+		fatal("save credential: %v", err)
+	}
+	fmt.Printf("\nlogged in as %s\n", cred.User.Email)
+}
+
+func cmdLogout() {
+	if err := auth.ClearCredential(); err != nil {
+		fatal("logout: %v", err)
+	}
+	fmt.Println("logged out")
+}
+
+func cmdWhoami() {
+	cred, err := auth.LoadCredential()
+	if err != nil {
+		fatal("whoami: %v", err)
+	}
+	if cred == nil {
+		fatal("not logged in — run `astra login`")
+	}
+	c := auth.New(cred.Server)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	u, err := c.Me(ctx, cred.Token)
+	if err != nil {
+		fmt.Printf("%s (cached; server unreachable: %v)\n", cred.User.Email, err)
+		return
+	}
+	fmt.Printf("%s (%s)\n", u.Email, cred.Server)
 }
 
 func fatal(format string, args ...any) {
