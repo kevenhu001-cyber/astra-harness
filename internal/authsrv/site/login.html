@@ -8,7 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="/assets/site.css?v=2">
+  <link rel="stylesheet" href="/assets/site.css?v=3">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -123,7 +123,7 @@
     </div>
   </footer>
 
-  <script src="/assets/auth.js?v=2"></script>
+  <script src="/assets/auth.js?v=3"></script>
   <script>
     (function () {
       var A = window.Astra;
@@ -151,7 +151,7 @@
         A.setErr(''); A.setOk('');
         try {
           await A.api('/login', { body: { email: document.getElementById('loginEmail').value, password: document.getElementById('loginPassword').value } });
-          window.location.href = '/account';
+          window.location.href = 'account';
         } catch (err) {
           A.setErr(err.message === 'invalid email or password' ? 'Invalid email or password' : err.message);
         }
@@ -187,7 +187,7 @@
         } catch (err) { A.setErr(err.message); }
       });
 
-      A.me().then(function (user) { if (user) window.location.href = '/account'; });
+      A.me().then(function (user) { if (user) window.location.href = 'account'; });
     })();
   </script>
 </body>

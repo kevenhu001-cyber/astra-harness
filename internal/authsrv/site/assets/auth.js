@@ -52,11 +52,11 @@
   }
 
   function redirectLogin() {
-    window.location.href = '/login';
+    window.location.href = 'login';
   }
 
   function redirectAccount() {
-    window.location.href = '/account';
+    window.location.href = 'account';
   }
 
   window.Astra = {
