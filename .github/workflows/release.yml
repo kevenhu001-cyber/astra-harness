@@ -67,9 +67,42 @@ jobs:
           path: dist/astra-${{ matrix.os }}-${{ matrix.arch }}.*
           if-no-files-found: error
 
+  build-auth:
+    name: Build astra-auth linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+            go build -trimpath -ldflags "-s -w" \
+            -o dist/astra-auth ./cmd/astra-auth
+          cd dist
+          tar -czf astra-auth-linux-${{ matrix.arch }}.tar.gz astra-auth
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: astra-auth-linux-${{ matrix.arch }}
+          path: dist/astra-auth-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, build-auth]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

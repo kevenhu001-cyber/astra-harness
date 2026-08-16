@@ -242,6 +242,32 @@ a:focus-visible, button:focus-visible, input:focus-visible {
 .cli .out { color: var(--text-40); }
 .cli .out-ok { color: var(--ok); }
 
+.install-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.install-card {
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.install-card h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -.01em;
+}
+.install-card .cli {
+  margin-top: 0;
+  padding: 16px;
+  font-size: 12.5px;
+}
+.install-note { margin: 18px 0 0; color: var(--text-40); font-size: 14px; line-height: 1.6; }
+.install-note code {
+  font-family: var(--font-mono);
+  color: var(--text-80);
+  font-size: 13px;
+}
+
 /* ---- protocol strip ---- */
 .protocol {
   margin-top: clamp(48px, 6vw, 80px);
@@ -504,6 +530,7 @@ a:focus-visible, button:focus-visible, input:focus-visible {
   .header-inner { min-height: 60px; }
   .grid-3 { grid-template-columns: 1fr; }
   .grid-2 { grid-template-columns: 1fr; }
+  .install-grid { grid-template-columns: 1fr; }
   .protocol { grid-template-columns: repeat(2, 1fr); }
   .footer-grid { grid-template-columns: 1fr 1fr; }
   .app-wrap { grid-template-columns: 1fr; }
