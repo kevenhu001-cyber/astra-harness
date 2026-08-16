@@ -781,6 +781,54 @@ func (e *Engine) BacktrackToUserMessage(n int) (string, error) {
 	return content, nil
 }
 
+// BranchBacktrackToUserMessage is the full Codex backtrack: truncate the
+// transcript after the n-th user message and keep the result as a new branch
+// session, leaving the original session untouched on disk.
+func (e *Engine) BranchBacktrackToUserMessage(n int) (string, error) {
+	e.mu.Lock()
+	idx := -1
+	count := -1
+	for i, m := range e.messages {
+		if m.Role == llm.RoleUser {
+			count++
+			if count == n {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		e.mu.Unlock()
+		return "", fmt.Errorf("no such user message")
+	}
+	content := e.messages[idx].Content
+	e.messages = e.messages[:idx+1]
+	e.running = false
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
+	}
+	sess := &core.Session{
+		ID:        core.NewID("ses"),
+		Root:      e.Root,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Provider:  e.ProviderID(),
+		Model:     e.Model,
+	}
+	for _, m := range e.messages {
+		sess.Messages = append(sess.Messages, core.SessionMessage{
+			Role: m.Role, Content: truncateText(m.Content, 500),
+			ToolCallID: m.ToolCallID, ToolName: m.Name,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+	e.session = sess
+	e.mu.Unlock()
+	_ = e.Store.SaveSession(sess)
+	return content, nil
+}
+
 // ProviderID returns the active provider id (safe for display).
 func (e *Engine) ProviderID() string {
 	if e.Provider != nil {

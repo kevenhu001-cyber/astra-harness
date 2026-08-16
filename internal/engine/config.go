@@ -108,6 +108,20 @@ var DefaultKeymap = map[string]string{
 	"external_editor":   "ctrl+g",
 	"transcript":        "ctrl+t",
 	"model_picker":      "ctrl+m",
+	"open_help":         "?",
+	"page_up":           "pgup",
+	"page_down":         "pgdn",
+	"scroll_up":         "ctrl+u",
+	"scroll_down":       "ctrl+down",
+	"clear":             "ctrl+l",
+	"new_session":       "ctrl+n",
+	"palette":           "ctrl+k",
+	"copy":              "ctrl+shift+c",
+	"paste_image":       "ctrl+v",
+	"permission_allow":  "y",
+	"permission_deny":   "n",
+	"permission_always": "a",
+	"permission_never":  "N",
 }
 
 // DefaultStatusLine mirrors Codex's default footer items.

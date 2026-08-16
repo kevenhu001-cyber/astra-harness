@@ -26,6 +26,7 @@ type overlay struct {
 	allDetail  []string
 	filter     string
 	filterable bool
+	keepOpen   bool
 	body       string
 	tabs       []string
 	tabEnds    []int // cumulative length after each tab; len(tabs) buckets
@@ -169,6 +170,9 @@ func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled boo
 	case "enter":
 		if len(o.items) > 0 && o.sel < len(o.items) && o.onSelect != nil {
 			id := o.onSelect(o.items[o.sel])
+			if o.keepOpen {
+				return false, "", true
+			}
 			return true, id, true
 		}
 		return true, "", true
@@ -504,10 +508,16 @@ func overlayEvents(e *engine.Engine) *overlay {
 func overlaySessions(e *engine.Engine) *overlay {
 	sessions, _ := e.Store.ListSessions()
 	if len(sessions) == 0 {
-		return &overlay{title: "Sessions", body: "No saved sessions. Run a task to create one."}
+		return &overlay{title: "Sessions", body: "No saved sessions. Run a task to create one.", footer: "esc close"}
 	}
-	o := &overlay{title: "Sessions", tabs: []string{"Recent", "By model", "By size"}}
+	o := &overlay{
+		title:      "Sessions",
+		tabs:       []string{"Recent", "By model", "By size"},
+		filterable: true,
+		footer:     "enter resume · esc start new · type to filter",
+	}
 	cur := e.SessionID()
+	o.append("+ start new session", "Start a fresh session (current transcript is kept on disk).")
 	for _, s := range sessions {
 		marker := " "
 		if s.ID == cur {
@@ -539,6 +549,9 @@ func overlaySessions(e *engine.Engine) *overlay {
 		id := strings.Fields(sel)
 		if len(id) == 0 {
 			return ""
+		}
+		if id[0] == "+" {
+			return "__new__"
 		}
 		// Strip the leading "●"/" " marker.
 		if id[0] == "●" || id[0] == "○" {
@@ -589,30 +602,73 @@ var statusLineItems = map[string]string{
 	"project-name":         "Project name",
 	"git-branch":           "Current git branch",
 	"run-state":            "Ready / Working / Thinking",
+	"permissions":          "Active permission profile or sandbox mode",
 	"approval-mode":        "Permission mode",
 	"context-used":         "Context window percentage used",
 	"context-remaining":    "Context window percentage remaining",
+	"context-window-size":  "Total context window in tokens",
 	"used-tokens":          "Tokens used in current session",
 	"total-input-tokens":   "Total input tokens",
 	"total-output-tokens":  "Total output tokens",
 	"estimated-cost":       "Estimated session cost",
 	"session-id":           "Current session id",
+	"thread-title":         "Current thread title",
+	"task-progress":        "Open unknowns / tasks",
 	"codex-version":        "Astra version",
 }
 
 func overlayStatusLine(e *engine.Engine) *overlay {
-	var b strings.Builder
-	b.WriteString("current: " + strings.Join(e.StatusLineItems(), " · ") + "\n\n")
+	current := e.StatusLineItems()
+	o := &overlay{title: "Status line", keepOpen: true, footer: "enter toggle · esc close"}
 	ids := make([]string, 0, len(statusLineItems))
 	for id := range statusLineItems {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		fmt.Fprintf(&b, "  %-22s %s\n", id, statusLineItems[id])
+		marker := " "
+		for _, c := range current {
+			if c == id {
+				marker = "●"
+				break
+			}
+		}
+		o.append(fmt.Sprintf("%s %-22s %s", marker, id, statusLineItems[id]),
+			fmt.Sprintf("ID: %s\n\n%s\n\nEnter toggles this item.", id, statusLineItems[id]))
 	}
-	b.WriteString("\nusage: /statusline <item ...> · /statusline reset")
-	return &overlay{title: "Status line", body: b.String(), footer: "esc close"}
+	o.onSelect = func(sel string) string {
+		fields := strings.Fields(sel)
+		if len(fields) < 2 {
+			return ""
+		}
+		id := fields[1]
+		current = toggleStatusLineItem(current, id)
+		_ = e.SetStatusLine(current)
+		marker := " "
+		for _, c := range current {
+			if c == id {
+				marker = "●"
+				break
+			}
+		}
+		o.items[o.sel] = fmt.Sprintf("%s %-22s %s", marker, id, statusLineItems[id])
+		return ""
+	}
+	return o
+}
+
+func toggleStatusLineItem(items []string, id string) []string {
+	out := make([]string, 0, len(items)+1)
+	for _, it := range items {
+		if it == id {
+			continue
+		}
+		out = append(out, it)
+	}
+	if len(out) == len(items) {
+		out = append(out, id)
+	}
+	return out
 }
 
 func overlayKeymap(e *engine.Engine) *overlay {
@@ -740,19 +796,20 @@ func overlayHelp() *overlay {
 
 // overlayShortcuts mirrors Codex's "? for shortcuts" overlay: the same
 // keybinding rows and wording, with the Astra product name kept in place.
-func overlayShortcuts() *overlay {
+func overlayShortcuts(e *engine.Engine) *overlay {
+	key := func(action string) string { return e.KeymapBinding(action) }
 	body := strings.Join([]string{
 		"/  for commands",
 		"!  for shell commands",
-		"ctrl+j  for newline",
+		key("newline") + "  for newline",
 		"tab  to submit message",
 		"@  for file paths",
-		"ctrl+v  to paste images",
-		"ctrl+g  to edit in external editor",
-		"esc esc  to edit previous message",
-		"ctrl+r  search history",
-		"ctrl+c  to exit",
-		"ctrl+t  to view transcript",
+		key("paste_image") + "  to paste images",
+		key("external_editor") + "  to edit in external editor",
+		key("backtrack") + " " + key("backtrack") + "  to edit previous message",
+		key("history_search") + "  search history",
+		key("interrupt_or_quit") + "  to exit",
+		key("transcript") + "  to view transcript",
 		"alt+,  reasoning down",
 		"alt+.  reasoning up",
 		"",

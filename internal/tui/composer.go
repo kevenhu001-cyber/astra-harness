@@ -103,6 +103,10 @@ type composer struct {
 	bashMode bool
 	bashLine string
 
+	// Configurable Codex key chords (set from engine keymap at startup).
+	historySearchKey string
+	newlineKey       string
+
 	// Files context for @ autocomplete
 	fileCandidates []atCompletion
 
@@ -121,7 +125,11 @@ func newComposer(width int) composer {
 	ta.SetWidth(width - 6)
 	ta.SetHeight(2)
 	ta.Focus()
-	return composer{ta: ta, focused: true, width: width}
+	return composer{
+		ta: ta, focused: true, width: width,
+		historySearchKey: "ctrl+r",
+		newlineKey:       "ctrl+j",
+	}
 }
 
 func (c *composer) SetWidth(w int) {
@@ -216,8 +224,8 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 	}
 
 	// Ctrl+R — enter (or advance) reverse incremental search.
-	if s == "ctrl+r" || c.search {
-		if s == "ctrl+r" && !c.search {
+	if s == c.historySearchKey || c.search {
+		if s == c.historySearchKey && !c.search {
 			c.search = true
 			c.searchQuery = ""
 			c.searchHits = nil
@@ -233,7 +241,7 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 			c.searchHits = nil
 			c.searchPos = -1
 			return "", false, true
-		case "ctrl+r":
+		case c.historySearchKey:
 			if len(c.searchHits) > 0 {
 				c.searchPos = (c.searchPos + 1) % len(c.searchHits)
 			}
@@ -313,8 +321,8 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		}
 	}
 
-	switch s {
-	case "enter":
+	switch {
+	case s == "enter":
 		if strings.TrimSpace(value) == "" {
 			return "", false, true
 		}
@@ -324,13 +332,13 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		c.show = false
 		c.atShow = false
 		return out, true, true
-	case "ctrl+j":
+	case s == c.newlineKey:
 		c.ta.InsertString("\n")
 		return "", false, true
-	case "alt+enter", "alt+ctrl+j":
+	case s == "alt+enter" || s == "alt+ctrl+j":
 		c.ta.InsertString("\n")
 		return "", false, true
-	case "ctrl+up":
+	case s == "ctrl+up":
 		if len(c.history) > 0 {
 			if c.histIdx == 0 {
 				c.histIdx = len(c.history)
@@ -339,7 +347,7 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 			c.ta.SetValue(c.history[c.histIdx])
 		}
 		return "", false, true
-	case "ctrl+down":
+	case s == "ctrl+down":
 		if c.histIdx < len(c.history) {
 			c.histIdx++
 			if c.histIdx == len(c.history) {
@@ -349,7 +357,7 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 			}
 		}
 		return "", false, true
-	case "esc":
+	case s == "esc":
 		if c.show || c.atShow {
 			c.show = false
 			c.atShow = false

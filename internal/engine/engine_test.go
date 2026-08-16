@@ -163,8 +163,9 @@ func TestBacktrackToUserMessage(t *testing.T) {
 	eng.addMessage(llm.RoleAssistant, "answer one")
 	eng.addMessage(llm.RoleUser, "second")
 	eng.addMessage(llm.RoleAssistant, "answer two")
+	oldID := eng.SessionID()
 
-	msg, err := eng.BacktrackToUserMessage(1)
+	msg, err := eng.BranchBacktrackToUserMessage(1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +177,9 @@ func TestBacktrackToUserMessage(t *testing.T) {
 	eng.mu.Unlock()
 	if n != 3 {
 		t.Fatalf("expected 3 messages after backtrack, got %d", n)
+	}
+	if eng.SessionID() == oldID {
+		t.Fatal("branch backtrack should create a new session")
 	}
 }
 

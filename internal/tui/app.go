@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	atclip "github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -150,6 +151,8 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 	a.vp = viewport.New(80, 24)
 	a.vp.Style = lipgloss.NewStyle().Padding(0, 1)
 	a.composer = newComposer(80)
+	a.composer.historySearchKey = eng.KeymapBinding("history_search")
+	a.composer.newlineKey = eng.KeymapBinding("newline")
 	a.sidebar = *newSidebar(eng)
 	a.sidebar.visible = false
 	a.palette = palette{}
@@ -356,6 +359,52 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.overlay = overlayModels(a.engine)
 		return a, nil
 	}
+	if s != "" && s == a.engine.KeymapBinding("open_help") && a.composer.Value() == "" {
+		a.overlay = overlayShortcuts(a.engine)
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("page_up") {
+		a.vp.LineUp(max(1, a.viewportHeight()/2))
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("page_down") {
+		a.vp.LineDown(max(1, a.viewportHeight()/2))
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("scroll_up") {
+		a.vp.LineUp(10)
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("scroll_down") {
+		a.vp.LineDown(10)
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("clear") {
+		a.executeCommand("/clear")
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("new_session") {
+		a.executeCommand("/new")
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("palette") {
+		a.palette.Show()
+		return a, nil
+	}
+	if s != "" && s == a.engine.KeymapBinding("copy") {
+		for i := len(a.items) - 1; i >= 0; i-- {
+			if a.items[i].kind == "assistant" {
+				if err := atclip.WriteAll(a.items[i].raw); err != nil {
+					a.addError("copy: " + err.Error())
+				} else {
+					a.toast = "copied last response"
+					a.toastUntil = time.Now().Add(2 * time.Second)
+				}
+				break
+			}
+		}
+		return a, nil
+	}
 
 	// Palette has top priority while visible.
 	if a.palette.visible {
@@ -388,23 +437,27 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeChat
 			return a, nil
 		}
-		switch s {
-		case "y":
+		allowKey := a.engine.KeymapBinding("permission_allow")
+		alwaysKey := a.engine.KeymapBinding("permission_always")
+		denyKey := a.engine.KeymapBinding("permission_deny")
+		neverKey := a.engine.KeymapBinding("permission_never")
+		switch {
+		case s == allowKey:
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case "a":
+		case s == alwaysKey:
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true, Always: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case "n", "esc":
+		case s == denyKey || s == "esc":
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case "N":
+		case s == neverKey:
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false, Always: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
@@ -550,7 +603,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case "?":
 		if a.composer.Value() == "" {
-			a.overlay = overlayShortcuts()
+			a.overlay = overlayShortcuts(a.engine)
 			return a, nil
 		}
 	case "f1":
@@ -1081,7 +1134,11 @@ func splitCriteria(rest string) []string {
 func (a *app) overlaySelect(selected string) {
 	switch a.overlay.title {
 	case "Sessions":
-		a.resumeSession(selected)
+		if selected == "__new__" {
+			a.executeCommand("/new")
+		} else {
+			a.resumeSession(selected)
+		}
 	case "Models — pick provider/model":
 		parts := strings.SplitN(selected, "|", 2)
 		if len(parts) == 2 {
@@ -1100,7 +1157,7 @@ func (a *app) overlaySelect(selected string) {
 			a.addError("backtrack: invalid message")
 			return
 		}
-		msg, err := a.engine.BacktrackToUserMessage(n - 1)
+		msg, err := a.engine.BranchBacktrackToUserMessage(n - 1)
 		if err != nil {
 			a.addError("backtrack: " + err.Error())
 			return
@@ -1384,6 +1441,9 @@ func (a *app) renderStatusBar() string {
 	} else if left == "" {
 		left = "? for shortcuts"
 	}
+	if left == "? for shortcuts" && a.engine.Perm.IsPlanMode() {
+		left += " · Plan mode (shift+tab to cycle)"
+	}
 	right := strings.Join(a.statusLineSegments(), "  ·  ")
 	widthAvail := a.widthAvail() - 2
 	leftW := lipgloss.Width(left)
@@ -1451,6 +1511,12 @@ func (a *app) statusLineSegments() []string {
 			}
 		case "approval-mode":
 			out = append(out, e.Perm.GetMode())
+		case "permissions":
+			mode := e.Perm.GetMode()
+			if e.Perm.IsPlanMode() {
+				mode = "plan"
+			}
+			out = append(out, mode)
 		case "context-used":
 			if max := e.Config.MaxContextTokens; max > 0 && total > 0 {
 				pct := total * 100 / max
@@ -1464,6 +1530,10 @@ func (a *app) statusLineSegments() []string {
 				}
 				out = append(out, fmt.Sprintf("%d%% context left", 100-pct))
 			}
+		case "context-window-size":
+			if max := e.Config.MaxContextTokens; max > 0 {
+				out = append(out, fmt.Sprintf("%d tok window", max))
+			}
 		case "used-tokens":
 			out = append(out, fmt.Sprintf("%d tok", total))
 		case "total-input-tokens":
@@ -1476,6 +1546,12 @@ func (a *app) statusLineSegments() []string {
 			}
 		case "session-id":
 			out = append(out, e.SessionID())
+		case "thread-title":
+			out = append(out, filepath.Base(e.Root))
+		case "task-progress":
+			if n := len(e.Store.State.Unknowns); n > 0 {
+				out = append(out, fmt.Sprintf("%d tasks", n))
+			}
 		case "codex-version":
 			out = append(out, "astra")
 		}

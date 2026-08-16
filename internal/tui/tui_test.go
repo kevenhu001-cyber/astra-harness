@@ -84,7 +84,8 @@ func TestStatusLineSegments(t *testing.T) {
 }
 
 func TestOverlayShortcutsCodexStrings(t *testing.T) {
-	o := overlayShortcuts()
+	a := newTestApp(t)
+	o := overlayShortcuts(a.engine)
 	if !strings.Contains(o.body, "/  for commands") ||
 		!strings.Contains(o.body, "esc esc  to edit previous message") ||
 		!strings.Contains(o.body, "customize shortcuts with /keymap") {
@@ -98,6 +99,18 @@ func TestComposerImageAttachmentRendered(t *testing.T) {
 	out := c.View(80)
 	if !strings.Contains(out, "[Image #1]") || !strings.Contains(out, "/tmp/shot.png") {
 		t.Fatalf("image attachment not rendered:\n%s", out)
+	}
+}
+
+func TestToggleStatusLineItem(t *testing.T) {
+	items := []string{"model"}
+	items = toggleStatusLineItem(items, "model")
+	if len(items) != 0 {
+		t.Fatalf("expected removal, got %v", items)
+	}
+	items = toggleStatusLineItem(items, "git-branch")
+	if len(items) != 1 || items[0] != "git-branch" {
+		t.Fatalf("expected addition, got %v", items)
 	}
 }
 

@@ -21,13 +21,17 @@ black/white/orange color scheme the user asked for.
 | `keymapCapture` + `/keymap` | `keymap.rs`, `keymap_setup` | capture-style remap of core actions, persisted in config |
 | `overlayModels` filter | `model_popups.rs` | searchable model picker |
 | `RunWithOptions` resume picker | `resume_picker.rs` | startup resume picker when saved sessions exist |
+| `BranchBacktrackToUserMessage` | `app_backtrack.rs` | full branch-style backtrack: new session, original preserved |
+| `/statusline` interactive | `status_line_setup.rs` | enter-to-toggle picker over full item list |
+| `/keymap` extended | `keymap.rs` | scroll/page/clear/new/palette/copy/paste/help/permission actions remappable |
+| `overlaySessions` filter | `resume_picker.rs` | filterable session list + start-new entry |
 
 ## Not yet ported
 
-- Full Codex branch-style backtrack (currently truncate-and-edit)
-- `/keymap` full action coverage (core actions only for now)
-- `/statusline` every Codex item (Astra-computable subset is done)
+- `/keymap` full action coverage (remaining actions are viewer-only)
+- `/statusline` enterprise/cloud items (five-hour/weekly limits, credits, workspace headline)
 - Skills/multi-agent/collaboration/enterprise screens render as “not available” shells
-- Resume picker visual fidelity (list exists; dense/archive views not yet)
+- Resume picker dense/archive views and sort/filter tabs
+- Approval overlay visual fidelity beyond existing permission modal
 
 These are tracked as the next parity milestones.
