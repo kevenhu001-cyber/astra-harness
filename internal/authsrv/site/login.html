@@ -151,7 +151,12 @@
         A.setErr(''); A.setOk('');
         try {
           await A.api('/login', { body: { email: document.getElementById('loginEmail').value, password: document.getElementById('loginPassword').value } });
-          window.location.href = 'account';
+          var user = await A.me();
+          if (user) {
+            window.location.href = 'account';
+          } else {
+            A.setErr('Signed in, but your browser blocked the session cookie. Allow cookies for this site, then try again.');
+          }
         } catch (err) {
           A.setErr(err.message === 'invalid email or password' ? 'Invalid email or password' : err.message);
         }
