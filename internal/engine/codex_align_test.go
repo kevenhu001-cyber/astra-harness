@@ -123,13 +123,17 @@ func TestLoadProjectInstructionsOutsideRoot(t *testing.T) {
 func TestShouldAutoCompact(t *testing.T) {
 	root := t.TempDir()
 	eng := newTestEngine(t, root)
-	eng.Config.MaxContextTokens = 4000 // tiny budget
+	// Tiny-but-realistic budget: the Codex-style system prompt itself is a
+	// few thousand tokens, so the trigger must only fire once messages push
+	// the estimate past 80% of the budget.
+	eng.Config.MaxContextTokens = 20000
 
 	if eng.shouldAutoCompact() {
 		t.Fatal("empty context should not compact")
 	}
-	// ~5000 chars ≈ 1250 tokens; system prompt adds ~75; budget 4000 * 0.8 = 3200.
-	big := strings.Repeat("x", 20000)
+	// 100k chars ≈ 25k tokens; with the system prompt that is far past the
+	// 80% threshold (16k tokens).
+	big := strings.Repeat("x", 100000)
 	eng.addMessage(llm.RoleUser, big)
 	if !eng.shouldAutoCompact() {
 		t.Fatal("expected auto-compact trigger above 80% budget")

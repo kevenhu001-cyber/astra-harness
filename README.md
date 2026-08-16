@@ -14,7 +14,8 @@ Agent 是可替换、可销毁的计算资源；持久化的系统智能存在�
 
 - **TUI**：对标 Claude Code / Codex CLI / OpenCode 的交互体验
   - 对话内容显示完全对齐 Codex history cells：用户消息带终端背景色浅染 + `›` 前缀，助手消息为无边框 Markdown + `•` 前缀与缩进续行，工具调用渲染成 `• Running/Ran/Called` exec 单元格（`│`/`└` 缩进、成功/失败绿红圆点、超 5 行截断并提示 `ctrl + t to view transcript`），回合结束输出 `─ Worked for 42s ─` 分隔线
-  - 三个区域：标题栏（品牌、provider/model、模式、branch、goal progress）、聊天主区、可切换的侧边栏（Ctrl+B）
+  - `/status` 输出 Codex 风格状态卡（圆角边框、`>_ Astra Harness` 标题、对齐字段、上下文进度条）；权限弹层改为 Codex 选项式（`Would you like to run the following command?` + `$ cmd` + `› 1. Yes, proceed (y)`）；composer 提示符为 `› `
+  - 三个区域：标题栏（`>_ Astra Harness` + model/directory/permissions/branch/acct）、聊天主区、可切换的侧边栏（Ctrl+B）
     - 侧边栏四种模式（j/k 导航，tab/m 切换）：Sessions · Files · Knowledge · Activity
     - 点击/回车在侧边栏直接打开 claim/unknown/file overlay
   - 流式 Markdown 渲染：glamour + chroma 语法高亮（go/python/rs/ts/json/yaml/toml/md/diff 等）
@@ -73,6 +74,7 @@ Astra 的 TUI 与 CodeX / OpenCode 共享同样的输入模型，并针对 Astra
 - **Permission 模型**：READ / WRITE / EXECUTE / NETWORK / CREDENTIAL / DEPLOY / DELETE；`ask | allow | deny` 三档 + 会话级 always 决策 + Plan 模式；edit_file/write_file 走 WRITE 检查，run_command/MCP 走 EXECUTE 检查，deny 模式等价只读
 - **Verification**：自动识别 `go test`、`cargo test`、`npm test`、`pytest`、`gradle test`、`make test` 与对应 build 命令，测试/构建结果自动沉淀为 Evidence 与 Claim
 - **State Compiler**：把 Goal、Verified Claims、Top Unknowns、Recent Actions、Next Best Action 编译为决策上下文，而不是堆聊天历史
+- **系统提示词**：以 Codex CLI 提示词为蓝本重构（`internal/engine/system_prompt.md` 嵌入二进制），覆盖身份/个性、AGENTS.md 规范、自主性与持久性、任务执行/验证/最终回答格式、工具纪律，并按权限模式（plan/ask/allow/deny）动态注入沙箱与审批指令，最后附加 AGENTS.md、编译后知识状态与完整工具清单
 
 ## 快速开始
 

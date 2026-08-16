@@ -468,40 +468,6 @@ func (e *Engine) callModelOnce(ctx context.Context) (string, []llm.ToolCall, str
 	return content.String(), calls, finish, nil
 }
 
-func (e *Engine) buildSystemPrompt() string {
-	var b strings.Builder
-	b.WriteString(`You are Astra, an uncertainty-driven software engineering runtime.
-
-CORE PRINCIPLES
-1. The agent is disposable; durable intelligence lives in the state, evidence and unknown records.
-2. Claims require evidence. Never assert that something works without a test/build/runtime result.
-3. Unknowns drive planning. Prefer actions that resolve the highest-priority unknown.
-4. Actions compete on expected value: goal progress + information gain - cost - risk.
-5. Deterministic work (searching, reading, diffing, running tests) must be done with tools, not guessed.
-6. Never declare a task done by saying "Done". Finish with a concise summary: what changed, what was verified, what remains unknown.
-
-TOOL DISCIPLINE
-- Use search/read before editing; use git_status/git_diff to understand changes.
-- Prefer apply_patch for code edits (context-matched diff hunks, multiple files per call); fall back to edit_file for tiny single replacements.
-- Use run_tests/run_build/verify to collect evidence.
-- If a test fails, read the failure, investigate, fix, and re-run.
-- Use ask_user only when a decision genuinely requires the human operator.
-
-`)
-	if docs := e.LoadProjectInstructions(); docs != "" {
-		b.WriteString("=== PROJECT INSTRUCTIONS (AGENTS.md) ===\n")
-		b.WriteString(docs)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("=== COMPILED KNOWLEDGE STATE (query result, not chat history) ===\n")
-	b.WriteString(e.CompilerOutput())
-	b.WriteString("\n=== TOOLS ===\n")
-	for _, t := range e.AllToolDefs() {
-		fmt.Fprintf(&b, "- %s: %s\n", t.Name, t.Description)
-	}
-	return b.String()
-}
-
 // CompilerOutput renders the current state for prompts and status views.
 func (e *Engine) CompilerOutput() string {
 	recent := make([]string, 0, 12)

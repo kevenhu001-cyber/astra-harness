@@ -30,6 +30,10 @@ black/white/orange color scheme the user asked for.
 | `renderUser` / `renderAssistant` | `history_cell/messages.rs` | user messages: terminal-tinted background, bold-dim `› ` prefix, 2-col continuation gutter; assistant messages: `• ` prefix on the first markdown line with `  ` continuations, no boxes |
 | `markdown.go` style | `markdown_render.rs` | h1 bold+underlined, h2 bold, h3 bold+italic, h4-6 italic, inline code cyan, links cyan+underlined, blockquotes green `> `, ordered markers light blue, borderless highlighted code blocks |
 | transcript overlay / export | `ExecCell::transcript_lines` | `$ cmd` + raw output + `✓/✗ (code) • duration` transcript form |
+| `status.go` status card | `status/card.rs` | rounded `╭─╮` card with `>_ Astra Harness`, aligned Model/Directory/Permissions fields, token usage, context-window progress bar, session stats |
+| `renderPermission` approval prompt | `bottom_pane/approval_overlay.rs` | `Would you like to run the following command?` + `$ cmd` block + numbered option list with `›` on the recommended action and key shortcuts |
+| composer prompt | `bottom_pane/chat_composer.rs` | `› ` prompt before `Ask Astra to do anything` placeholder |
+| `renderHeader` | `history_cell/session.rs` (SessionHeaderHistoryCell) | `>_ Astra Harness (v0.1.0)` + dim `model:` / `directory:` / `permissions:` / `branch:` / `acct:` fields |
 
 ## Conversation display
 
@@ -52,12 +56,30 @@ The main chat viewport now mirrors Codex's history cells:
 - The **transcript overlay** and markdown export use Codex's `$ cmd` form with
   a `✓ • 1.2s` / `✗ (2) • 50ms` status row.
 
+## System prompt
+
+Astra's system prompt is modeled on Codex's CLI prompt
+(`codex-rs/core/gpt_5_2_prompt.md` + `prompts/src/permissions_instructions.rs`):
+
+- `internal/engine/system_prompt.md` holds the static persona and working
+  rules: identity/capabilities, personality, AGENTS.md spec, autonomy and
+  persistence, responsiveness, task execution, validation, ambition vs
+  precision, final-answer formatting, and tool guidelines (rg-first search,
+  `apply_patch`-first editing, verification discipline, MCP namespace).
+- `internal/engine/system_prompt.go` embeds the template and assembles the
+  run-specific prompt: mode-specific sandbox/approval instructions (plan /
+  ask / allow / deny, mirroring Codex's permission-profile injection),
+  collected AGENTS.md content, the compiled knowledge state, and the full
+  tool catalog.
+- Astra-specific "Knowledge and uncertainty discipline" section keeps the
+  runtime's invariants: claims require evidence, unknowns drive planning,
+  actions compete on expected utility, stale evidence must be re-verified.
+
 ## Not yet ported
 
 - `/keymap` full action coverage (remaining actions are viewer-only)
 - `/statusline` enterprise/cloud items (five-hour/weekly limits, credits, workspace headline)
 - Skills/multi-agent/collaboration/enterprise screens render as “not available” shells
 - Resume picker dense/archive views and sort/filter tabs
-- Approval overlay visual fidelity beyond existing permission modal
 
 These are tracked as the next parity milestones.

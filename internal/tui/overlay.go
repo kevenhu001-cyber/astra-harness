@@ -20,6 +20,7 @@ import (
 type overlay struct {
 	title      string
 	footer     string
+	borderless bool
 	items      []string
 	detail     []string
 	allItems   []string
@@ -190,6 +191,9 @@ func (o *overlay) View(width, height int) string {
 }
 
 func renderSimpleOverlay(o *overlay, width, height int) string {
+	if o.borderless {
+		return o.body
+	}
 	maxW := width - 8
 	if maxW > 120 {
 		maxW = 120
@@ -298,16 +302,18 @@ func renderDetail(o *overlay, w int) string {
 
 // ---- factories ----------------------------------------------------------
 
-func overlayStatus(e *engine.Engine) *overlay {
-	st := e.Store.State
+func overlayStatus(a *app) *overlay {
+	st := a.engine.Store.State
 	var b strings.Builder
-	b.WriteString(e.CompilerOutput())
-	b.WriteString("\n")
-	b.WriteString(styleDim.Render(fmt.Sprintf("state dir: %s\nindex: %s", e.StateDir(), e.IndexPath())))
-	b.WriteString("\n")
+	b.WriteString(codexStatusCard(a))
+	b.WriteString("\n\n")
+	b.WriteString(styleDim.Render(a.engine.CompilerOutput()))
+	b.WriteString("\n\n")
+	b.WriteString(styleDim.Render(fmt.Sprintf("state dir: %s\nindex: %s", a.engine.StateDir(), a.engine.IndexPath())))
+	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("goals=%d claims=%d evidence=%d unknowns=%d actions=%d",
 		len(st.Goals), len(st.Claims), len(st.Evidence), len(st.Unknowns), len(st.Actions)))
-	return &overlay{title: "Status — compiled knowledge state", body: b.String()}
+	return &overlay{title: "Status — compiled knowledge state", body: b.String(), borderless: true}
 }
 
 func overlayClaims(st *core.State) *overlay {

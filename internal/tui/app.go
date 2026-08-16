@@ -775,7 +775,7 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 	case "/help":
 		a.overlay = overlayHelp()
 	case "/status":
-		a.overlay = overlayStatus(a.engine)
+		a.overlay = overlayStatus(a)
 	case "/claims":
 		a.overlay = overlayClaims(a.engine.Store.State)
 	case "/unknowns":
@@ -1426,15 +1426,22 @@ func (a *app) View() string {
 
 func (a *app) renderHeader() string {
 	var b strings.Builder
-	b.WriteString(styleBrand.Render("◆ Astra"))
+	b.WriteString(styleDim.Render(">_ "))
+	b.WriteString(styleTitle.Render("Astra Harness"))
+	b.WriteString(styleDim.Render(" (v0.1.0)"))
 	if a.busy {
 		b.WriteString("  ")
 		b.WriteString(a.spinner.View())
 		elapsed := time.Since(a.busyAt).Truncate(time.Second)
 		b.WriteString(styleDim.Render(fmt.Sprintf(" %s", elapsed)))
 	}
-	b.WriteString("  ")
-	b.WriteString(styleSubtle.Render(fmt.Sprintf("%s/%s", a.engine.ProviderID(), a.engine.Model)))
+	b.WriteString("  " + styleDim.Render("model:"))
+	b.WriteString(" " + styleEmph.Render(a.engine.Model))
+	if reasoning := a.engine.ReasoningEffort(); reasoning != "" && reasoning != "medium" {
+		b.WriteString(styleDim.Render(" (" + reasoning + ")"))
+	}
+	b.WriteString("  " + styleDim.Render("directory:"))
+	b.WriteString(" " + styleSubtle.Render(headerDir(a.engine.Root)))
 	mode := "ask"
 	if a.engine.Perm.IsPlanMode() {
 		mode = "plan"
@@ -1443,18 +1450,33 @@ func (a *app) renderHeader() string {
 	} else if a.engine.Perm.GetMode() == engine.ModeDeny {
 		mode = "deny"
 	}
-	b.WriteString("  ")
-	b.WriteString(styleDim.Render("[" + mode + "]"))
+	b.WriteString("  " + styleDim.Render("permissions:"))
+	b.WriteString(" " + styleSubtle.Render(mode))
 	if br := a.engine.Git.BranchOr(""); br != "" {
-		b.WriteString("  ")
-		b.WriteString(styleDim.Render("⎇ " + br))
+		b.WriteString("  " + styleDim.Render("branch:"))
+		b.WriteString(" " + styleSubtle.Render(br))
 	}
 	if a.userEmail != "" {
-		b.WriteString("  ")
-		b.WriteString(styleSubtle.Render("acct "))
-		b.WriteString(styleEmph.Render(a.userEmail))
+		b.WriteString("  " + styleDim.Render("acct:"))
+		b.WriteString(" " + styleSubtle.Render(a.userEmail))
 	}
 	return styleHeaderRow.Render(b.String())
+}
+
+// headerDir shortens the working directory for the session header, replacing
+// the user's home prefix with "~" the way Codex's session header does.
+func headerDir(root string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return root
+	}
+	if root == home {
+		return "~"
+	}
+	if strings.HasPrefix(root, home+string(os.PathSeparator)) {
+		return "~" + root[len(home):]
+	}
+	return root
 }
 
 // widthAvail returns the available horizontal space in the main pane,
@@ -1604,18 +1626,43 @@ func (a *app) renderPermission() string {
 		return ""
 	}
 	req := a.pendingPerm
+	allowKey := a.engine.KeymapBinding("permission_allow")
+	alwaysKey := a.engine.KeymapBinding("permission_always")
+	denyKey := a.engine.KeymapBinding("permission_deny")
+	neverKey := a.engine.KeymapBinding("permission_never")
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("🔒 Permission required · "+req.Kind) + "\n")
-	b.WriteString("target:     " + req.Target + "\n")
-	if req.Command != "" {
-		b.WriteString("command:    " + req.Command + "\n")
+	switch req.Kind {
+	case engine.PermExecute:
+		b.WriteString("Would you like to run the following command?\n")
+	case engine.PermRead:
+		b.WriteString("Would you like to read the following path?\n")
+	case engine.PermWrite:
+		b.WriteString("Would you like to modify the following path?\n")
+	default:
+		b.WriteString("Would you like to grant this permission?\n")
 	}
+	b.WriteString("\n")
 	if req.Description != "" {
-		b.WriteString("description:" + req.Description + "\n")
+		b.WriteString("  Reason: " + styleDim.Render(req.Description) + "\n")
 	}
-	b.WriteString(styleDim.Render(req.Risk) + "\n")
-	b.WriteString(styleKey.Render("y") + " allow · " + styleKey.Render("a") + " always · " + styleKey.Render("n") + " deny · " + styleKey.Render("N") + " always deny · " + styleKey.Render("esc") + " deny once")
-	return stylePanel.Width(a.width - 2).Render(b.String())
+	if req.Risk != "" {
+		b.WriteString("  Risk:   " + styleDim.Render(req.Risk) + "\n")
+	}
+	if req.Command != "" {
+		b.WriteString("\n  " + stylePrompt.Render(codexPrompt) + " " + styleCmdName.Render(req.Command) + "\n")
+	} else if req.Target != "" {
+		b.WriteString("\n  " + styleDim.Render(req.Target) + "\n")
+	}
+	b.WriteString("\n")
+	// Codex-style option list: the recommended action is pre-selected with
+	// "›", and every option carries its direct key shortcut.
+	b.WriteString("  " + styleKey.Render("›") + " 1. Yes, proceed (" + styleKey.Render(allowKey) + ")\n")
+	b.WriteString("     2. Yes, allow for this session (" + styleKey.Render(alwaysKey) + ")\n")
+	b.WriteString("     3. No, deny once (" + styleKey.Render(denyKey) + " / esc)\n")
+	b.WriteString("     4. No, deny for this session (" + styleKey.Render(neverKey) + ")\n")
+	b.WriteString("\n")
+	b.WriteString("  " + styleDim.Render("Press y/a/n/N to choose · esc to cancel"))
+	return b.String()
 }
 
 func (a *app) renderAsk() string {
@@ -1739,8 +1786,8 @@ func (a *app) renderAssistant(md string, dur time.Duration) string {
 // renderToolStreaming renders a tool cell that is still producing output,
 // Codex-style:
 //
-//	• Running cargo build
-//	  └ Compiling foo...
+//   - Running cargo build
+//     └ Compiling foo...
 func (a *app) renderToolStreaming(name, output string) string {
 	// The item for this live cell holds the tool args (needed for the
 	// header label); find the most recent running cell for this tool.

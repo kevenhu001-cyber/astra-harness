@@ -119,7 +119,7 @@ type composer struct {
 func newComposer(width int) composer {
 	ta := textarea.New()
 	ta.Placeholder = "Ask Astra to do anything"
-	ta.Prompt = "> "
+	ta.Prompt = "› "
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetWidth(width - 6)
