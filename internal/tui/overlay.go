@@ -18,16 +18,16 @@ import (
 // partition the items/detail slices into ranges — navigation (j/k) is
 // scoped to the active tab.
 type overlay struct {
-	title     string
-	footer    string
-	items     []string
-	detail    []string
-	body      string
-	tabs      []string
-	tabEnds   []int // cumulative length after each tab; len(tabs) buckets
-	tab       int
-	sel       int
-	onSelect  func(string) string
+	title    string
+	footer   string
+	items    []string
+	detail   []string
+	body     string
+	tabs     []string
+	tabEnds  []int // cumulative length after each tab; len(tabs) buckets
+	tab      int
+	sel      int
+	onSelect func(string) string
 }
 
 func (o *overlay) empty() bool { return len(o.items) == 0 && o.body == "" }
@@ -150,7 +150,7 @@ func renderSimpleOverlay(o *overlay, width, height int) string {
 		maxW = 120
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(" " + o.title) + "\n\n")
+	b.WriteString(styleTitle.Render(" "+o.title) + "\n\n")
 	b.WriteString(o.body)
 	b.WriteString("\n\n")
 	if o.footer != "" {
@@ -507,6 +507,35 @@ func overlaySessions(e *engine.Engine) *overlay {
 	return o
 }
 
+func overlayProviderConfig(e *engine.Engine) *overlay {
+	var b strings.Builder
+	for _, p := range e.Config.Providers {
+		keyState := p.APIKeyEnv
+		if p.APIKey != "" {
+			keyState = "set (stored in .astra/config.json)"
+		}
+		if keyState == "" {
+			keyState = "unset"
+		}
+		url := p.BaseURL
+		if url == "" {
+			url = "—"
+		}
+		models := strings.Join(p.Models, ", ")
+		if models == "" {
+			models = "—"
+		}
+		b.WriteString(styleTitle.Render("["+p.ID+"]") + "\n")
+		b.WriteString(fmt.Sprintf("  type:    %s\n", p.Type))
+		b.WriteString(fmt.Sprintf("  url:     %s\n", url))
+		b.WriteString(fmt.Sprintf("  api key: %s\n", keyState))
+		b.WriteString(fmt.Sprintf("  models:  %s\n", models))
+		b.WriteString("\n")
+	}
+	b.WriteString(styleDim.Render("/set-url <provider> <url> · /set-key <provider> <key> · /set-model <provider> <model>"))
+	return &overlay{title: "Provider configuration", body: b.String(), footer: "esc close"}
+}
+
 func overlayModels(e *engine.Engine) *overlay {
 	recent := e.RecentModels()
 	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Recent", "Available", "Configured"}}
@@ -734,7 +763,7 @@ func overlayMcp(e *engine.Engine) *overlay {
 	if len(configured) == 0 {
 		return &overlay{
 			title: "MCP servers",
-			body: "No MCP servers configured.\n\nAstra supports the Model Context Protocol over stdio; configured\nservers' tools are exposed to the model as mcp__<server>__<tool>.\n\nAdd servers to .astra/config.json:\n\n{\n  \"mcp_servers\": [\n    {\n      \"id\": \"github\",\n      \"command\": \"mcp-github\",\n      \"args\": []\n    }\n  ]\n}\n\nThen restart Astra (or /init to reconnect).",
+			body:  "No MCP servers configured.\n\nAstra supports the Model Context Protocol over stdio; configured\nservers' tools are exposed to the model as mcp__<server>__<tool>.\n\nAdd servers to .astra/config.json:\n\n{\n  \"mcp_servers\": [\n    {\n      \"id\": \"github\",\n      \"command\": \"mcp-github\",\n      \"args\": []\n    }\n  ]\n}\n\nThen restart Astra (or /init to reconnect).",
 		}
 	}
 	var b strings.Builder
@@ -802,7 +831,7 @@ func overlayTasks(e *engine.Engine) *overlay {
 func overlayAgents(e *engine.Engine) *overlay {
 	return &overlay{
 		title: "Sub-agents",
-		body: "Sub-agents are spawned from the main loop when an action requires\nisolation or a different model.\n\nFuture:\n  /spawn <task>  — create a sub-agent in its own session\n  /agents        — list active sub-agents\n  /kill <id>     — terminate a sub-agent\n\n(Implemented in Phase 11/12.)",
+		body:  "Sub-agents are spawned from the main loop when an action requires\nisolation or a different model.\n\nFuture:\n  /spawn <task>  — create a sub-agent in its own session\n  /agents        — list active sub-agents\n  /kill <id>     — terminate a sub-agent\n\n(Implemented in Phase 11/12.)",
 	}
 }
 

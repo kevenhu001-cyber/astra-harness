@@ -761,11 +761,77 @@ func (e *Engine) SwitchModel(providerID, model string) error {
 	e.Provider = p
 	e.Model = m
 	e.mu.Unlock()
+	e.Config.DefaultProvider = p.ID()
+	e.Config.DefaultModel = m
 	if id := p.ID() + "|" + m; id != "" {
 		e.PushRecentModel(id)
 		_ = SaveConfig(e.Root, e.Config)
 	}
 	return nil
+}
+
+// UpdateProvider changes a provider's base URL, API key, or model list and
+// persists the change to .astra/config.json. Empty fields keep current values;
+// a non-empty model also becomes the default model for the provider.
+func (e *Engine) UpdateProvider(id, baseURL, apiKey, model string) error {
+	e.mu.Lock()
+	idx := -1
+	for i := range e.Config.Providers {
+		if e.Config.Providers[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown provider %q", id)
+	}
+	p := &e.Config.Providers[idx]
+	if baseURL != "" {
+		p.BaseURL = baseURL
+	}
+	if apiKey != "" {
+		p.APIKey = apiKey
+	}
+	if model != "" {
+		found := false
+		for _, m := range p.Models {
+			if m == model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			p.Models = append(p.Models, model)
+		}
+		e.Config.DefaultProvider = id
+		e.Config.DefaultModel = model
+	}
+	e.mu.Unlock()
+	if err := SaveConfig(e.Root, e.Config); err != nil {
+		return err
+	}
+	e.refreshRouter()
+	return nil
+}
+
+// refreshRouter rebuilds providers from Config and keeps the active provider
+// when it is still available after a configuration change.
+func (e *Engine) refreshRouter() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.Router = llm.NewRouter(BuildProviders(e.Config), e.Config.DefaultProvider, e.Config.DefaultModel)
+	if e.Provider != nil {
+		if p, m, err := e.Router.Pick(e.Provider.ID(), e.Model); err == nil && p.Available() {
+			e.Provider = p
+			e.Model = m
+			return
+		}
+	}
+	if p, m, err := e.Router.Default(); err == nil && p.Available() {
+		e.Provider = p
+		e.Model = m
+	}
 }
 
 // State recording ------------------------------------------------------------

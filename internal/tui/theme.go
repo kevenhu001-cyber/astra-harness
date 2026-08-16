@@ -24,27 +24,27 @@ type themePalette struct {
 	AccentLo lipgloss.Color
 
 	// Semantic
-	Cyan    lipgloss.Color
-	CyanHi  lipgloss.Color
-	Magenta lipgloss.Color
-	Green   lipgloss.Color
-	Yellow  lipgloss.Color
-	Orange  lipgloss.Color
-	Red     lipgloss.Color
-	RedHi   lipgloss.Color
-	Gray    lipgloss.Color
-	GrayLo  lipgloss.Color
-	GrayHi  lipgloss.Color
-	White   lipgloss.Color
+	Cyan     lipgloss.Color
+	CyanHi   lipgloss.Color
+	Magenta  lipgloss.Color
+	Green    lipgloss.Color
+	Yellow   lipgloss.Color
+	Orange   lipgloss.Color
+	Red      lipgloss.Color
+	RedHi    lipgloss.Color
+	Gray     lipgloss.Color
+	GrayLo   lipgloss.Color
+	GrayHi   lipgloss.Color
+	White    lipgloss.Color
 	WhiteDim lipgloss.Color
 
 	// Diff
-	DiffAddBg   lipgloss.Color
-	DiffAddFg   lipgloss.Color
-	DiffDelBg   lipgloss.Color
-	DiffDelFg   lipgloss.Color
-	DiffCtxFg   lipgloss.Color
-	DiffHunkFg  lipgloss.Color
+	DiffAddBg  lipgloss.Color
+	DiffAddFg  lipgloss.Color
+	DiffDelBg  lipgloss.Color
+	DiffDelFg  lipgloss.Color
+	DiffCtxFg  lipgloss.Color
+	DiffHunkFg lipgloss.Color
 
 	// Pills
 	PillEvidence lipgloss.Color
@@ -56,7 +56,7 @@ type themePalette struct {
 var palettes = map[string]themePalette{
 	"astra-dark": {
 		Name: "astra-dark",
-		Bg0: "#0F0F17", Bg1: "#15151F", Bg2: "#1C1C29", Bg3: "#262638",
+		Bg0:  "#0F0F17", Bg1: "#15151F", Bg2: "#1C1C29", Bg3: "#262638",
 		Accent: "#8B7CF6", AccentHi: "#B4A7FF", AccentLo: "#5B4DC9",
 		Cyan: "#5FD4FF", CyanHi: "#9CE5FF", Magenta: "#E879F9",
 		Green: "#4ADE80", Yellow: "#FACC15", Orange: "#FB923C",
@@ -71,7 +71,7 @@ var palettes = map[string]themePalette{
 	},
 	"astra-light": {
 		Name: "astra-light",
-		Bg0: "#FFFFFF", Bg1: "#F6F6F9", Bg2: "#EAEAF2", Bg3: "#D6D6E2",
+		Bg0:  "#FFFFFF", Bg1: "#F6F6F9", Bg2: "#EAEAF2", Bg3: "#D6D6E2",
 		Accent: "#5B4DC9", AccentHi: "#3F37A4", AccentLo: "#7A6AD9",
 		Cyan: "#0EA5E9", CyanHi: "#0284C7", Magenta: "#C026D3",
 		Green: "#16A34A", Yellow: "#CA8A04", Orange: "#EA580C",
@@ -86,7 +86,7 @@ var palettes = map[string]themePalette{
 	},
 	"mono": {
 		Name: "mono",
-		Bg0: "#000000", Bg1: "#0A0A0A", Bg2: "#141414", Bg3: "#1F1F1F",
+		Bg0:  "#000000", Bg1: "#0A0A0A", Bg2: "#141414", Bg3: "#1F1F1F",
 		Accent: "#E5E7EB", AccentHi: "#FFFFFF", AccentLo: "#9CA3AF",
 		Cyan: "#D4D4D8", CyanHi: "#E5E7EB", Magenta: "#A1A1AA",
 		Green: "#A1A1AA", Yellow: "#D4D4D8", Orange: "#E5E7EB",
@@ -99,11 +99,26 @@ var palettes = map[string]themePalette{
 		PillEvidence: "#1F1F1F", PillUnknown: "#27272A",
 		PillClaim: "#141414", PillError: "#27272A",
 	},
+	"codex": {
+		Name: "codex",
+		Bg0:  "#000000", Bg1: "#0A0A0A", Bg2: "#161616", Bg3: "#1F1F1F",
+		Accent: "#F97316", AccentHi: "#FFA94D", AccentLo: "#9A3412",
+		Cyan: "#E5E5E5", CyanHi: "#FFFFFF", Magenta: "#A3A3A3",
+		Green: "#FFFFFF", Yellow: "#F97316", Orange: "#F97316",
+		Red: "#F97316", RedHi: "#FFB27A",
+		Gray: "#737373", GrayLo: "#262626", GrayHi: "#A3A3A3",
+		White: "#E5E5E5", WhiteDim: "#A3A3A3",
+		DiffAddBg: "#1A1A1A", DiffAddFg: "#FFFFFF",
+		DiffDelBg: "#2A1608", DiffDelFg: "#FFB27A",
+		DiffCtxFg: "#737373", DiffHunkFg: "#F97316",
+		PillEvidence: "#111111", PillUnknown: "#1A0E04",
+		PillClaim: "#0D0D0D", PillError: "#2A1608",
+	},
 }
 
 var (
-	themeMu  sync.RWMutex
-	active   = palettes["astra-dark"]
+	themeMu sync.RWMutex
+	active  = palettes["codex"]
 )
 
 // ThemeNames returns the registered theme names (sorted).
@@ -190,46 +205,46 @@ func (pal themePalette) access(name string) lipgloss.Color {
 // Styles (rebuilt by rebuildStyles on theme switch). Other files reference
 // these by name; the values mutate in place when the theme changes.
 var (
-	styleTitle          lipgloss.Style
-	styleSubtle         lipgloss.Style
-	styleDim            lipgloss.Style
-	styleFaint          lipgloss.Style
-	styleBody           lipgloss.Style
-	styleEmph           lipgloss.Style
-	styleLink           lipgloss.Style
-	styleKey            lipgloss.Style
-	styleValue          lipgloss.Style
-	styleHeader         lipgloss.Style
-	styleBrand          lipgloss.Style
-	styleUserBox        lipgloss.Style
-	styleAssistantBox   lipgloss.Style
-	styleToolBox        lipgloss.Style
-	styleToolBoxRunning lipgloss.Style
-	styleToolBoxOK      lipgloss.Style
-	styleToolBoxErr     lipgloss.Style
-	styleSidebar        lipgloss.Style
-	styleSidebarSel     lipgloss.Style
-	styleSystem         lipgloss.Style
-	styleError          lipgloss.Style
-	styleWarn           lipgloss.Style
-	styleOk             lipgloss.Style
-	styleStatusBar      lipgloss.Style
-	styleStatusBarKey   lipgloss.Style
-	styleComposer       lipgloss.Style
+	styleTitle           lipgloss.Style
+	styleSubtle          lipgloss.Style
+	styleDim             lipgloss.Style
+	styleFaint           lipgloss.Style
+	styleBody            lipgloss.Style
+	styleEmph            lipgloss.Style
+	styleLink            lipgloss.Style
+	styleKey             lipgloss.Style
+	styleValue           lipgloss.Style
+	styleHeader          lipgloss.Style
+	styleBrand           lipgloss.Style
+	styleUserBox         lipgloss.Style
+	styleAssistantBox    lipgloss.Style
+	styleToolBox         lipgloss.Style
+	styleToolBoxRunning  lipgloss.Style
+	styleToolBoxOK       lipgloss.Style
+	styleToolBoxErr      lipgloss.Style
+	styleSidebar         lipgloss.Style
+	styleSidebarSel      lipgloss.Style
+	styleSystem          lipgloss.Style
+	styleError           lipgloss.Style
+	styleWarn            lipgloss.Style
+	styleOk              lipgloss.Style
+	styleStatusBar       lipgloss.Style
+	styleStatusBarKey    lipgloss.Style
+	styleComposer        lipgloss.Style
 	styleComposerFocused lipgloss.Style
-	styleComposerBash   lipgloss.Style
-	styleOverlay        lipgloss.Style
-	stylePanel          lipgloss.Style
-	styleCodeBlock      lipgloss.Style
-	styleQuote          lipgloss.Style
-	styleDiffHunk       lipgloss.Style
-	styleDiffAdd        lipgloss.Style
-	styleDiffDel        lipgloss.Style
-	stylePill           lipgloss.Style
-	styleHeaderRow      lipgloss.Style
-	styleCodeLineNum    lipgloss.Style
-	styleDiffCtxLine    lipgloss.Style
-	styleDiffFileHdr    lipgloss.Style
+	styleComposerBash    lipgloss.Style
+	styleOverlay         lipgloss.Style
+	stylePanel           lipgloss.Style
+	styleCodeBlock       lipgloss.Style
+	styleQuote           lipgloss.Style
+	styleDiffHunk        lipgloss.Style
+	styleDiffAdd         lipgloss.Style
+	styleDiffDel         lipgloss.Style
+	stylePill            lipgloss.Style
+	styleHeaderRow       lipgloss.Style
+	styleCodeLineNum     lipgloss.Style
+	styleDiffCtxLine     lipgloss.Style
+	styleDiffFileHdr     lipgloss.Style
 )
 
 // rebuildStylesLocked rebuilds all style globals from the active palette.

@@ -38,6 +38,10 @@ var slashCommands = []slashCmd{
 	{Name: "/undo", Desc: "rewind last assistant turn", Category: "Safety", Shortcut: "Ctrl+U"},
 	{Name: "/model", Desc: "switch model", Category: "Model"},
 	{Name: "/provider", Desc: "switch provider", Category: "Model"},
+	{Name: "/config", Desc: "show providers and model configuration", Category: "Model"},
+	{Name: "/set-url", Desc: "set provider base URL", Category: "Model", Placeholder: "<provider> <url>"},
+	{Name: "/set-key", Desc: "set provider API key (saved locally)", Category: "Model", Placeholder: "<provider> <key>"},
+	{Name: "/set-model", Desc: "add and switch to a model ID", Category: "Model", Placeholder: "<provider> <model>"},
 	{Name: "/cost", Desc: "token usage and cost", Category: "Model"},
 	{Name: "/stats", Desc: "session statistics", Category: "Model"},
 	{Name: "/permissions", Desc: "permission mode (ask|allow|deny)", Category: "Safety", Placeholder: "ask|allow|deny"},
@@ -73,18 +77,18 @@ type atCompletion struct {
 }
 
 type composer struct {
-	ta         textarea.Model
-	filtered   []slashCmd
-	sel        int
-	show       bool
-	atShow     bool
-	atQuery    string
+	ta           textarea.Model
+	filtered     []slashCmd
+	sel          int
+	show         bool
+	atShow       bool
+	atQuery      string
 	atCandidates []atCompletion
-	atSel      int
-	focused    bool
-	history    []string
-	histIdx    int
-	plain      bool
+	atSel        int
+	focused      bool
+	history      []string
+	histIdx      int
+	plain        bool
 
 	// Reverse-i-search (Ctrl+R) state.
 	search      bool
@@ -104,8 +108,8 @@ type composer struct {
 
 func newComposer(width int) composer {
 	ta := textarea.New()
-	ta.Placeholder = "Describe a task, ask a question, or type / for commands  (Alt+Enter for newline, ! for shell, @ for files)"
-	ta.Prompt = "❯ "
+	ta.Placeholder = "Ask Astra to do anything"
+	ta.Prompt = "> "
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetWidth(width - 6)

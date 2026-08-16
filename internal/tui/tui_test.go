@@ -125,13 +125,13 @@ func TestPaletteFuzzy(t *testing.T) {
 }
 
 func TestThemeSwitch(t *testing.T) {
-	if CurrentTheme() != "astra-dark" {
-		t.Fatalf("default theme should be astra-dark, got %q", CurrentTheme())
+	if CurrentTheme() != "codex" {
+		t.Fatalf("default theme should be codex, got %q", CurrentTheme())
 	}
 	if SetTheme("nope") != "" {
 		t.Fatal("unknown theme name should be rejected")
 	}
-	defer SetTheme("astra-dark")
+	defer SetTheme("codex")
 	if applied := SetTheme("astra-light"); applied != "astra-light" {
 		t.Fatalf("SetTheme = %q", applied)
 	}

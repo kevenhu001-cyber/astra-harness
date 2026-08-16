@@ -19,6 +19,7 @@ type ProviderConfig struct {
 	Name      string   `json:"name,omitempty"`
 	BaseURL   string   `json:"base_url,omitempty"`
 	APIKeyEnv string   `json:"api_key_env,omitempty"`
+	APIKey    string   `json:"api_key,omitempty"`
 	Models    []string `json:"models"`
 }
 
@@ -252,6 +253,9 @@ func BuildProviders(cfg *Config) []llm.Provider {
 }
 
 func resolveKey(p ProviderConfig) string {
+	if p.APIKey != "" {
+		return p.APIKey
+	}
 	if p.APIKeyEnv != "" {
 		if v := os.Getenv(p.APIKeyEnv); v != "" {
 			return v
@@ -282,7 +286,14 @@ func SaveConfig(root string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), data, 0o644)
+	mode := os.FileMode(0o644)
+	for _, p := range cfg.Providers {
+		if p.APIKey != "" {
+			mode = 0o600
+			break
+		}
+	}
+	return os.WriteFile(filepath.Join(dir, "config.json"), data, mode)
 }
 
 // EnsureConfig writes a starter config if none exists.

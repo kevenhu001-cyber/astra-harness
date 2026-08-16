@@ -562,7 +562,11 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 	if len(parts) > 1 {
 		args = strings.TrimSpace(strings.TrimPrefix(cmdline, cmd))
 	}
-	a.addSystem("$ " + cmdline)
+	display := cmdline
+	if cmd == "/set-key" {
+		display = "/set-key <provider> ****"
+	}
+	a.addSystem("$ " + display)
 	switch cmd {
 	case "/help":
 		a.overlay = overlayHelp()
@@ -607,6 +611,41 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 			}
 		} else {
 			a.overlay = overlayModels(a.engine)
+		}
+	case "/config":
+		a.overlay = overlayProviderConfig(a.engine)
+	case "/set-url":
+		id, val, err := providerArg(args)
+		if err != nil {
+			a.addError(err.Error())
+			break
+		}
+		if err := a.engine.UpdateProvider(id, val, "", ""); err != nil {
+			a.addError(err.Error())
+		} else {
+			a.addSystem("provider " + id + " url: " + val)
+		}
+	case "/set-key":
+		id, val, err := providerArg(args)
+		if err != nil {
+			a.addError(err.Error())
+			break
+		}
+		if err := a.engine.UpdateProvider(id, "", val, ""); err != nil {
+			a.addError(err.Error())
+		} else {
+			a.addSystem("provider " + id + " api key saved (config file is 0600)")
+		}
+	case "/set-model":
+		id, val, err := providerArg(args)
+		if err != nil {
+			a.addError(err.Error())
+			break
+		}
+		if err := a.engine.UpdateProvider(id, "", "", val); err != nil {
+			a.addError(err.Error())
+		} else {
+			a.addSystem("provider " + id + " model: " + val)
 		}
 	case "/permissions", "/perm":
 		if args != "" {
@@ -838,6 +877,18 @@ func parseGoalArgs(args string) (string, []string) {
 		}
 	}
 	return args, nil
+}
+
+// providerArg splits "<provider> <value>" arguments for /set-url, /set-key
+// and /set-model. The value keeps everything after the first token so URLs
+// and model IDs containing separators still work.
+func providerArg(args string) (string, string, error) {
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("usage: <provider> <value>")
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(args, parts[0]))
+	return parts[0], rest, nil
 }
 
 func splitCriteria(rest string) []string {
@@ -1088,8 +1139,6 @@ func (a *app) View() string {
 func (a *app) renderHeader() string {
 	var b strings.Builder
 	b.WriteString(styleBrand.Render("◆ Astra"))
-	b.WriteString("  ")
-	b.WriteString(styleDim.Render("uncertainty-driven runtime"))
 	if a.busy {
 		b.WriteString("  ")
 		b.WriteString(a.spinner.View())
@@ -1111,16 +1160,6 @@ func (a *app) renderHeader() string {
 	if br := a.engine.Git.BranchOr(""); br != "" {
 		b.WriteString("  ")
 		b.WriteString(styleDim.Render("⎇ " + br))
-	}
-	if g := a.engine.Store.ActiveGoal(); g != nil {
-		b.WriteString("  ")
-		b.WriteString(styleDim.Render("◆"))
-		b.WriteString(styleValue.Render(fmt.Sprintf(" %.0f%% ", g.Progress*100)))
-	}
-	if e := a.engine.ReasoningEffort(); e != "" && e != "medium" {
-		b.WriteString("  ")
-		b.WriteString(styleDim.Render("reason="))
-		b.WriteString(styleEmph.Render(e))
 	}
 	if a.userEmail != "" {
 		b.WriteString("  ")
@@ -1146,18 +1185,22 @@ func (a *app) widthAvail() int {
 func (a *app) renderStatusBar() string {
 	left := a.status
 	if left == "" {
-		left = "ready — describe a task or type /help · ⌘K palette · ! shell · @ files"
+		left = "? for shortcuts · esc edit previous · ctrl+r history search"
 	}
 	if time.Now().Before(a.toastUntil) {
 		left = a.toast
 	}
 	rightParts := []string{
-		fmt.Sprintf("⚑ claims %d", len(a.engine.Store.State.Claims)),
-		fmt.Sprintf("? unknowns %d", len(a.engine.Store.State.Unknowns)),
-		fmt.Sprintf("▣ evidence %d", len(a.engine.Store.State.Evidence)),
+		fmt.Sprintf("%s/%s", a.engine.ProviderID(), a.engine.Model),
+	}
+	if br := a.engine.Git.BranchOr(""); br != "" {
+		rightParts = append(rightParts, "⎇ "+br)
+	}
+	if mode := a.engine.Perm.GetMode(); mode != engine.ModeAsk {
+		rightParts = append(rightParts, "["+mode+"]")
 	}
 	if a.lastUsage.InputTokens > 0 || a.lastUsage.OutputTokens > 0 {
-		rightParts = append(rightParts, fmt.Sprintf("↻ %d→%d tok", a.lastUsage.InputTokens, a.lastUsage.OutputTokens))
+		rightParts = append(rightParts, fmt.Sprintf("%d→%d tok", a.lastUsage.InputTokens, a.lastUsage.OutputTokens))
 		if a.lastUsage.CacheReadTokens > 0 {
 			rightParts = append(rightParts, styleOk.Render(fmt.Sprintf("cache %d", a.lastUsage.CacheReadTokens)))
 		}
@@ -1166,6 +1209,7 @@ func (a *app) renderStatusBar() string {
 		}
 		rightParts = append(rightParts, fmt.Sprintf("$ $%.4f", a.totalCost))
 	}
+	rightParts = append(rightParts, "? help")
 	right := strings.Join(rightParts, "  ")
 	widthAvail := a.widthAvail() - 2
 	leftW := lipgloss.Width(left)

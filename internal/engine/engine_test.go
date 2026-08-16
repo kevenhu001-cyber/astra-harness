@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
@@ -102,6 +103,42 @@ func TestEngineUX(t *testing.T) {
 	}
 	if len(eng.messages) != 0 || eng.session == nil {
 		t.Fatalf("NewSession didn't reset; msgs=%d sess=%v", len(eng.messages), eng.session)
+	}
+}
+
+func TestUpdateProviderPersistsConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg := &Config{
+		Providers: []ProviderConfig{{
+			ID: "test", Type: "openai-compatible", Name: "Test",
+			BaseURL: "https://example.invalid/v1", APIKeyEnv: "TEST_API_KEY",
+			Models: []string{"test-model"},
+		}},
+		DefaultProvider: "test", DefaultModel: "test-model",
+		PermissionMode: "ask", MaxIterations: 1, TimeoutSeconds: 5,
+	}
+	eng, err := NewEngine(root, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Store.Close()
+
+	if err := eng.UpdateProvider("test", "https://new.example/v1", "sk-test-123", "new-model"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".astra", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "sk-test-123") || !strings.Contains(string(data), "new-model") {
+		t.Fatalf("config did not persist updates:\n%s", data)
+	}
+	info, err := os.Stat(filepath.Join(root, ".astra", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config with api key should be 0600, got %v", info.Mode().Perm())
 	}
 }
 
