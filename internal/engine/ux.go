@@ -1,11 +1,91 @@
 package engine
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/kevenhu001-cyber/astra-harness/internal/llm"
 )
+
+// PushRecentModel records a recently-used model identifier (provider|model)
+// in the project config so it surfaces in the model picker.
+func (e *Engine) PushRecentModel(id string) {
+	recents := e.Config.RecentModels
+	for _, r := range recents {
+		if r == id {
+			return
+		}
+	}
+	recents = append(recents, id)
+	if len(recents) > 8 {
+		recents = recents[len(recents)-8:]
+	}
+	e.Config.RecentModels = recents
+}
+
+// RenameSession renames the active session by removing the old file and
+// rewriting the session with the new ID. Returns an error if the new ID is
+// empty, contains path separators, or would escape the sessions directory.
+func (e *Engine) RenameSession(newID string) error {
+	newID = strings.TrimSpace(newID)
+	if newID == "" {
+		return errors.New("empty session id")
+	}
+	if strings.ContainsAny(newID, "/\\") || strings.Contains(newID, "..") {
+		return errors.New("session id must not contain path separators or '..'")
+	}
+	e.mu.Lock()
+	if e.session == nil {
+		e.mu.Unlock()
+		return errors.New("no active session")
+	}
+	oldID := e.session.ID
+	old := *e.session
+	e.mu.Unlock()
+
+	// Validate that both paths land inside the same session directory before
+	// touching anything.
+	newPath := e.Store.SessionPath(newID)
+	oldPath := e.Store.SessionPath(oldID)
+	dir := filepath.Dir(newPath)
+	if !strings.HasPrefix(oldPath, dir+string(filepath.Separator)) || !strings.HasPrefix(newPath, dir+string(filepath.Separator)) {
+		return errors.New("session path escapes sessions dir")
+	}
+	_ = os.Remove(oldPath)
+	old.ID = newID
+	if err := e.Store.SaveSession(&old); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.session = &old
+	e.mu.Unlock()
+	return nil
+}
+
+// SetReasoningEffort changes the reasoning effort knob (and persists it).
+func (e *Engine) SetReasoningEffort(level string) error {
+	switch level {
+	case "low", "medium", "high", "xhigh":
+	default:
+		return errors.New("reasoning effort must be low|medium|high|xhigh")
+	}
+	e.Config.ReasoningEffort = level
+	return SaveConfig(e.Root, e.Config)
+}
+
+// ReasoningEffort returns the configured reasoning effort knob.
+func (e *Engine) ReasoningEffort() string {
+	if e.Config.ReasoningEffort == "" {
+		return "medium"
+	}
+	return e.Config.ReasoningEffort
+}
+
+// RecentModels returns the recently-used model identifiers.
+func (e *Engine) RecentModels() []string { return e.Config.RecentModels }
 
 // RelPath returns a forward-slashed, project-relative path.
 func RelPath(root, path string) string {

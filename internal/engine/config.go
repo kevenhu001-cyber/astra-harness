@@ -33,6 +33,8 @@ type Config struct {
 	AutoVerify       *bool            `json:"auto_verify,omitempty"`
 	TimeoutSeconds   int              `json:"timeout_seconds,omitempty"`
 	SmallModel       string           `json:"small_model,omitempty"`
+	ReasoningEffort  string           `json:"reasoning_effort,omitempty"` // low | medium | high | xhigh
+	RecentModels     []string         `json:"recent_models,omitempty"`
 }
 
 func defaultConfig() *Config {
@@ -155,6 +157,12 @@ func mergeFile(cfg *Config, path string) error {
 	}
 	if merged.SmallModel != "" {
 		cfg.SmallModel = merged.SmallModel
+	}
+	if merged.ReasoningEffort != "" {
+		cfg.ReasoningEffort = merged.ReasoningEffort
+	}
+	if merged.RecentModels != nil {
+		cfg.RecentModels = merged.RecentModels
 	}
 	return nil
 }

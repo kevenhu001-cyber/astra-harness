@@ -147,6 +147,21 @@ func (g *Git) Diff() string {
 	return d
 }
 
+// DiffBase returns the diff between HEAD and the given base branch.
+func (g *Git) DiffBase(base string) string {
+	if base == "" {
+		base = g.DefaultBranch()
+	}
+	if base == "" {
+		return ""
+	}
+	d, err := g.run(context.Background(), "diff", base+"...HEAD")
+	if err != nil {
+		d, _ = g.run(context.Background(), "diff", base)
+	}
+	return d
+}
+
 func (g *Git) DiffStat() string {
 	d, _ := g.run(context.Background(), "diff", "--stat")
 	return d

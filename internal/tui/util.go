@@ -17,6 +17,38 @@ func readFileLimit(path string, limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
+// previewFile returns the first `maxLines` lines of a file (relative to the
+// process CWD when path is relative) formatted as compact multi-line text.
+// Returns "" if the file is not readable.
+func previewFile(path string, maxLines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Try resolving relative paths.
+		data, err = os.ReadFile("./" + path)
+		if err != nil {
+			return ""
+		}
+	}
+	lines := strings.SplitN(string(data), "\n", maxLines+1)
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	out := ""
+	for i, l := range lines {
+		if i > 0 {
+			out += "\n"
+		}
+		if len(l) > 80 {
+			l = l[:77] + "…"
+		}
+		out += fmt.Sprintf("%4d  %s", i+1, l)
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		out += "\n  …"
+	}
+	return out
+}
+
 // truncate shortens a string to n runes and appends an ellipsis when truncation
 // occurred. The rune-safe variant avoids slicing mid-codepoint on UTF-8.
 func truncate(s string, n int) string {

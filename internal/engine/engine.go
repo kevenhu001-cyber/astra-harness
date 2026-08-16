@@ -459,7 +459,8 @@ func (e *Engine) ProviderID() string {
 	return ""
 }
 
-// SwitchModel changes provider/model at runtime.
+// SwitchModel changes provider/model at runtime and tracks the choice in
+// recent-models (persisted to .astra/config.json).
 func (e *Engine) SwitchModel(providerID, model string) error {
 	p, m, err := e.Router.Pick(providerID, model)
 	if err != nil {
@@ -472,6 +473,10 @@ func (e *Engine) SwitchModel(providerID, model string) error {
 	e.Provider = p
 	e.Model = m
 	e.mu.Unlock()
+	if id := p.ID() + "|" + m; id != "" {
+		e.PushRecentModel(id)
+		_ = SaveConfig(e.Root, e.Config)
+	}
 	return nil
 }
 

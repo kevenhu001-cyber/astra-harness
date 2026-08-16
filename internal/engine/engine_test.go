@@ -104,3 +104,35 @@ func TestEngineUX(t *testing.T) {
 		t.Fatalf("NewSession didn't reset; msgs=%d sess=%v", len(eng.messages), eng.session)
 	}
 }
+
+func TestEngineRename(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module demo\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		Providers:       []ProviderConfig{{ID: "test", Type: "openai-compatible", Name: "Test", BaseURL: "https://example.invalid/v1", APIKeyEnv: "TEST_API_KEY", Models: []string{"test-model"}}},
+		DefaultProvider: "test", DefaultModel: "test-model",
+		PermissionMode: "ask", MaxIterations: 1, TimeoutSeconds: 5,
+	}
+	t.Setenv("TEST_API_KEY", "stub")
+	eng, err := NewEngine(root, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Store.Close()
+	_ = eng.SessionID()
+
+	if err := eng.RenameSession(""); err == nil {
+		t.Fatal("empty session id should be rejected")
+	}
+	if err := eng.RenameSession("../escape"); err == nil {
+		t.Fatal("path-traversal session id should be rejected")
+	}
+	if err := eng.RenameSession("ses-clean-name"); err != nil {
+		t.Fatalf("rename failed: %v", err)
+	}
+	if eng.SessionID() != "ses-clean-name" {
+		t.Fatalf("session id = %q", eng.SessionID())
+	}
+}

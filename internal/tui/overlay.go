@@ -14,22 +14,69 @@ import (
 	"github.com/kevenhu001-cyber/astra-harness/internal/knowledge"
 )
 
-// overlay is a generic centered overlay with an optional left list + right
-// detail. The list selection drives the detail panel.
+// overlay is a generic centered overlay with a left list + right detail. Tabs
+// partition the items/detail slices into ranges — navigation (j/k) is
+// scoped to the active tab.
 type overlay struct {
-	title    string
-	footer   string
-	items    []string
-	detail   []string // one row of detail per item (rendered when list focused)
-	body     string   // fallback body when no items
-	sel      int
-	tabs     []string
-	tab      int
-	onSelect func(string) string
+	title     string
+	footer    string
+	items     []string
+	detail    []string
+	body      string
+	tabs      []string
+	tabEnds   []int // cumulative length after each tab; len(tabs) buckets
+	tab       int
+	sel       int
+	onSelect  func(string) string
 }
 
-// ensure overlay has unique rendering helpers.
 func (o *overlay) empty() bool { return len(o.items) == 0 && o.body == "" }
+
+// tabRange returns [start, end) indices for the current tab.
+func (o *overlay) tabRange() (int, int) {
+	if len(o.tabEnds) == 0 {
+		return 0, len(o.items)
+	}
+	if o.tab < 0 || o.tab >= len(o.tabEnds) {
+		return 0, len(o.items)
+	}
+	end := o.tabEnds[o.tab]
+	start := 0
+	if o.tab > 0 {
+		start = o.tabEnds[o.tab-1]
+	}
+	return start, end
+}
+
+// append adds an item + detail pair to the current tab's bucket.
+func (o *overlay) append(label, detail string) {
+	if len(o.tabEnds) == 0 {
+		o.tabEnds = append(o.tabEnds, 0)
+	}
+	o.tabEnds[len(o.tabEnds)-1]++
+	o.items = append(o.items, label)
+	o.detail = append(o.detail, detail)
+}
+
+// finishTab terminates the current bucket and starts a fresh one.
+func (o *overlay) finishTab() {
+	o.tabEnds = append(o.tabEnds, len(o.items))
+}
+
+// clampSel keeps the cursor inside the active tab range.
+func (o *overlay) clampSel() {
+	start, end := o.tabRange()
+	if end-start == 0 {
+		o.sel = 0
+		return
+	}
+	if o.sel < start {
+		o.sel = start
+	}
+	if o.sel >= end {
+		o.sel = end - 1
+	}
+}
 
 func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled bool) {
 	key, ok := msg.(tea.KeyMsg)
@@ -40,33 +87,46 @@ func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled boo
 	case "esc", "ctrl+c":
 		return true, "", true
 	case "up", "shift+tab":
-		if len(o.items) > 0 {
-			o.sel = (o.sel - 1 + len(o.items)) % len(o.items)
+		start, end := o.tabRange()
+		if end > start {
+			if o.sel <= start {
+				o.sel = end - 1
+			} else {
+				o.sel--
+			}
 		}
 		return false, "", true
 	case "down", "tab":
-		if len(o.items) > 0 {
-			o.sel = (o.sel + 1) % len(o.items)
+		start, end := o.tabRange()
+		if end > start {
+			if o.sel >= end-1 {
+				o.sel = start
+			} else {
+				o.sel++
+			}
 		}
 		return false, "", true
 	case "left":
 		if len(o.tabs) > 0 {
 			o.tab = (o.tab - 1 + len(o.tabs)) % len(o.tabs)
+			o.clampSel()
 		}
 		return false, "", true
 	case "right":
 		if len(o.tabs) > 0 {
 			o.tab = (o.tab + 1) % len(o.tabs)
+			o.clampSel()
 		}
 		return false, "", true
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		idx := int(key.String()[0]-'1')
+		idx := int(key.String()[0] - '1')
 		if idx < len(o.tabs) {
 			o.tab = idx
+			o.clampSel()
 		}
 		return false, "", true
 	case "enter":
-		if len(o.items) > 0 && o.onSelect != nil {
+		if len(o.items) > 0 && o.sel < len(o.items) && o.onSelect != nil {
 			id := o.onSelect(o.items[o.sel])
 			return true, id, true
 		}
@@ -78,7 +138,7 @@ func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled boo
 }
 
 func (o *overlay) View(width, height int) string {
-	if o.body != "" && len(o.items) == 0 {
+	if o.body != "" && len(o.items) == 0 && o.tab == 0 {
 		return renderSimpleOverlay(o, width, height)
 	}
 	return renderTabbedOverlay(o, width, height)
@@ -90,7 +150,7 @@ func renderSimpleOverlay(o *overlay, width, height int) string {
 		maxW = 120
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(" "+o.title) + "\n\n")
+	b.WriteString(styleTitle.Render(" " + o.title) + "\n\n")
 	b.WriteString(o.body)
 	b.WriteString("\n\n")
 	if o.footer != "" {
@@ -107,29 +167,26 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 	if maxW > 130 {
 		maxW = 130
 	}
-	// Two-column layout: list (left) + detail (right).
 	leftW := maxW/2 - 2
 	if leftW < 28 {
 		leftW = 28
 	}
 	rightW := maxW - leftW - 6
 
-	// Tabs row.
 	var tabs strings.Builder
 	if len(o.tabs) > 0 {
 		for i, t := range o.tabs {
-			label := "  " + t + "  "
 			if i == o.tab {
-				tabs.WriteString(styleKey.Render(" "+t+" "))
+				tabs.WriteString(styleKey.Render(" " + t + " "))
 			} else {
-				tabs.WriteString(styleDim.Render(label))
+				tabs.WriteString(styleDim.Render("  " + t + "  "))
 			}
 			tabs.WriteString(styleDim.Render("  "))
 		}
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("◆ "+o.title))
+	b.WriteString(styleTitle.Render("◆ " + o.title))
 	b.WriteString("\n")
 	if tabs.Len() > 0 {
 		b.WriteString(tabs.String())
@@ -141,7 +198,6 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 	left := renderList(o, leftW)
 	right := renderDetail(o, rightW)
 
-	// Combine left + right side-by-side.
 	combined := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(leftW).Render(left),
 		"  ",
@@ -152,7 +208,7 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 	if o.footer != "" {
 		b.WriteString(styleDim.Render(o.footer))
 	} else {
-		b.WriteString(styleDim.Render("↑↓ select · ⏎ open · esc close"))
+		b.WriteString(styleDim.Render("↑↓ select · ←→ tab · ⏎ open · esc close"))
 	}
 	box := styleOverlay.Width(maxW).Render(b.String())
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
@@ -160,13 +216,14 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 
 func renderList(o *overlay, w int) string {
 	var b strings.Builder
+	start, end := o.tabRange()
 	maxRows := 18
-	for i, it := range o.items {
-		if i >= maxRows {
-			b.WriteString(styleDim.Render(fmt.Sprintf("  …+%d more", len(o.items)-i)))
+	for i := start; i < end; i++ {
+		if i-start >= maxRows {
+			b.WriteString(styleDim.Render(fmt.Sprintf("  …+%d more", end-i)))
 			break
 		}
-		text := truncate(it, w-4)
+		text := truncate(o.items[i], w-4)
 		if i == o.sel {
 			b.WriteString(styleTitle.Render("● " + text))
 		} else {
@@ -174,17 +231,20 @@ func renderList(o *overlay, w int) string {
 		}
 		b.WriteString("\n")
 	}
-	if len(o.items) == 0 {
+	if end-start == 0 {
 		b.WriteString(styleDim.Render("(no items)"))
 	}
 	return b.String()
 }
 
 func renderDetail(o *overlay, w int) string {
-	if len(o.detail) > o.sel && o.detail[o.sel] != "" {
-		return o.detail[o.sel]
+	if o.sel < 0 || o.sel >= len(o.detail) {
+		return styleDim.Render("No detail")
 	}
-	return styleDim.Render("No detail")
+	if o.detail[o.sel] == "" {
+		return styleDim.Render("No detail")
+	}
+	return o.detail[o.sel]
 }
 
 // ---- factories ----------------------------------------------------------
@@ -206,8 +266,8 @@ func overlayClaims(st *core.State) *overlay {
 		return &overlay{title: "Claims", body: "No claims yet.\n\nClaims emerge from verification, tests, builds, and runtime evidence."}
 	}
 	type row struct {
-		label string
-		order int
+		label  string
+		order  int
 		detail string
 	}
 	rows := make([]row, 0, len(st.Claims))
@@ -221,9 +281,16 @@ func overlayClaims(st *core.State) *overlay {
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].order < rows[j].order })
 	o := &overlay{title: "Claims", tabs: []string{"By status", "By confidence"}}
 	for _, r := range rows {
-		o.items = append(o.items, r.label)
-		o.detail = append(o.detail, r.detail)
+		o.append(r.label, r.detail)
 	}
+	o.finishTab()
+	// "By confidence" bucket: same items sorted differently.
+	byConf := append([]row(nil), rows...)
+	sort.SliceStable(byConf, func(i, j int) bool { return byConf[i].label < byConf[j].label })
+	for _, r := range byConf {
+		o.append(r.label, r.detail)
+	}
+	o.finishTab()
 	return o
 }
 
@@ -279,11 +346,15 @@ func overlayUnknowns(st *core.State) *overlay {
 	if len(unknowns) == 0 {
 		return &overlay{title: "Unknowns", body: "No open unknowns. Nice — but verify before declaring done."}
 	}
-	o := &overlay{title: "Unknowns — ranked by priority", tabs: []string{"Ranked", "By source"}}
+	o := &overlay{title: "Unknowns — ranked by priority", tabs: []string{"Ranked", "All"}}
 	for _, u := range unknowns {
-		o.items = append(o.items, fmt.Sprintf("p=%.2f  %s", u.Priority, truncate(u.Description, 60)))
-		o.detail = append(o.detail, formatUnknownDetail(u))
+		o.append(fmt.Sprintf("p=%.2f  %s", u.Priority, truncate(u.Description, 60)), formatUnknownDetail(u))
 	}
+	o.finishTab()
+	for _, u := range unknowns {
+		o.append(truncate(u.Description, 60), formatUnknownDetail(u))
+	}
+	o.finishTab()
 	return o
 }
 
@@ -300,11 +371,20 @@ func overlayEvidence(st *core.State) *overlay {
 		return &overlay{title: "Evidence", body: "No evidence recorded yet."}
 	}
 	o := &overlay{title: "Evidence", tabs: []string{"All", "Tests", "Build", "Runtime"}}
-	for _, ev := range st.Evidence {
-		o.items = append(o.items, fmt.Sprintf("[%s] %.0f%%  %s", ev.Kind, ev.Confidence*100, truncate(ev.Source, 50)))
-		o.detail = append(o.detail, formatEvidenceDetail(ev))
+	bucket := func(filter string) {
+		for _, ev := range st.Evidence {
+			if filter != "" && ev.Kind != filter {
+				continue
+			}
+			label := fmt.Sprintf("[%s] %.0f%%  %s", ev.Kind, ev.Confidence*100, truncate(ev.Source, 50))
+			o.append(label, formatEvidenceDetail(ev))
+		}
+		o.finishTab()
 	}
-	sort.SliceStable(o.items, func(i, j int) bool { return o.items[i] < o.items[j] })
+	bucket("")
+	bucket(core.EvidenceTestResult)
+	bucket(core.EvidenceBuildResult)
+	bucket(core.EvidenceRuntimeResult)
 	return o
 }
 
@@ -329,9 +409,15 @@ func overlayActions(st *core.State) *overlay {
 	sort.SliceStable(actions, func(i, j int) bool { return actions[i].CreatedAt.After(actions[j].CreatedAt) })
 	o := &overlay{title: "Actions", tabs: []string{"Recent", "By utility"}}
 	for _, a := range actions {
-		o.items = append(o.items, fmt.Sprintf("[%s] %s  u=%.2f", a.Status, truncate(a.Description, 60), a.Utility))
-		o.detail = append(o.detail, formatActionDetail(a))
+		o.append(fmt.Sprintf("[%s] %s  u=%.2f", a.Status, truncate(a.Description, 60), a.Utility), formatActionDetail(a))
 	}
+	o.finishTab()
+	byUtil := append([]*core.Action(nil), actions...)
+	sort.SliceStable(byUtil, func(i, j int) bool { return byUtil[i].Utility > byUtil[j].Utility })
+	for _, a := range byUtil {
+		o.append(fmt.Sprintf("[%s] u=%.2f  %s", a.Status, a.Utility, truncate(a.Description, 60)), formatActionDetail(a))
+	}
+	o.finishTab()
 	return o
 }
 
@@ -346,45 +432,98 @@ func formatActionDetail(a *core.Action) string {
 func overlayEvents(e *engine.Engine) *overlay {
 	events := e.Store.State.Events
 	if len(events) == 0 {
-		return &overlay{title: "Events (materialized)", body: "No events yet."}
+		return &overlay{title: "Event log", body: "No events yet."}
 	}
-	o := &overlay{title: "Event log", tabs: []string{"Recent", "By type"}}
+	o := &overlay{title: "Event log", tabs: []string{"Recent", "All"}}
 	start := 0
 	if len(events) > 80 {
 		start = len(events) - 80
 	}
 	for _, ev := range events[start:] {
-		o.items = append(o.items, fmt.Sprintf("%s  %s", ev.Timestamp.Format("15:04:05.000"), ev.Type))
-		o.detail = append(o.detail, fmt.Sprintf("Type: %s\nID:   %s\nTime: %s\n\nData:\n%s",
-			ev.Type, ev.ID, ev.Timestamp.Format(time.RFC3339), prettyJSON(ev.Data)))
+		label := fmt.Sprintf("%s  %s", ev.Timestamp.Format("15:04:05.000"), ev.Type)
+		detail := fmt.Sprintf("Type: %s\nID:   %s\nTime: %s\n\nData:\n%s",
+			ev.Type, ev.ID, ev.Timestamp.Format(time.RFC3339), prettyJSON(ev.Data))
+		o.append(label, detail)
 	}
-	sort.SliceStable(o.items, func(i, j int) bool { return o.items[i] > o.items[j] })
+	o.finishTab()
+	for _, ev := range events {
+		label := fmt.Sprintf("%s  %s", ev.Timestamp.Format("15:04:05.000"), ev.Type)
+		detail := fmt.Sprintf("Type: %s\nID:   %s\nTime: %s\n\nData:\n%s",
+			ev.Type, ev.ID, ev.Timestamp.Format(time.RFC3339), prettyJSON(ev.Data))
+		o.append(label, detail)
+	}
+	o.finishTab()
 	return o
 }
 
 func overlaySessions(e *engine.Engine) *overlay {
 	sessions, _ := e.Store.ListSessions()
-	o := &overlay{title: "Sessions", tabs: []string{"Recent", "By model"}}
 	if len(sessions) == 0 {
-		o.body = "No saved sessions. Run a task to create one."
-		return o
+		return &overlay{title: "Sessions", body: "No saved sessions. Run a task to create one."}
 	}
+	o := &overlay{title: "Sessions", tabs: []string{"Recent", "By model", "By size"}}
+	cur := e.SessionID()
 	for _, s := range sessions {
-		o.items = append(o.items, fmt.Sprintf("%s · %d msgs · %s",
-			truncate(s.ID, 18), len(s.Messages), s.UpdatedAt.Format("01-02 15:04")))
-		o.detail = append(o.detail, fmt.Sprintf("ID:        %s\nCreated:   %s\nUpdated:   %s\nModel:     %s\nMessages:  %d\nGoal:      %s",
+		marker := " "
+		if s.ID == cur {
+			marker = "●"
+		}
+		label := fmt.Sprintf("%s %s · %d msgs · %s",
+			marker, truncate(s.ID, 18), len(s.Messages), s.UpdatedAt.Format("01-02 15:04"))
+		detail := fmt.Sprintf("ID:        %s\nCreated:   %s\nUpdated:   %s\nModel:     %s\nMessages:  %d\nGoal:      %s",
 			s.ID, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339),
-			s.Model, len(s.Messages), s.GoalID))
+			s.Model, len(s.Messages), s.GoalID)
+		o.append(label, detail)
 	}
+	o.finishTab()
+	byModel := append([]*core.Session(nil), sessions...)
+	sort.SliceStable(byModel, func(i, j int) bool { return byModel[i].Model < byModel[j].Model })
+	for _, s := range byModel {
+		o.append(fmt.Sprintf("%s · %s", truncate(s.ID, 18), s.Model),
+			fmt.Sprintf("ID: %s\nModel: %s\nMessages: %d", s.ID, s.Model, len(s.Messages)))
+	}
+	o.finishTab()
+	bySize := append([]*core.Session(nil), sessions...)
+	sort.SliceStable(bySize, func(i, j int) bool { return len(bySize[i].Messages) > len(bySize[j].Messages) })
+	for _, s := range bySize {
+		o.append(fmt.Sprintf("%s · %d msgs", truncate(s.ID, 18), len(s.Messages)),
+			fmt.Sprintf("ID: %s\nModel: %s\nMessages: %d", s.ID, s.Model, len(s.Messages)))
+	}
+	o.finishTab()
 	o.onSelect = func(sel string) string {
-		id := strings.Fields(sel)[0]
-		return id
+		id := strings.Fields(sel)
+		if len(id) == 0 {
+			return ""
+		}
+		// Strip the leading "●"/" " marker.
+		if id[0] == "●" || id[0] == "○" {
+			if len(id) > 1 {
+				return id[1]
+			}
+			return ""
+		}
+		return id[0]
 	}
 	return o
 }
 
 func overlayModels(e *engine.Engine) *overlay {
-	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Available", "Configured"}}
+	recent := e.RecentModels()
+	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Recent", "Available", "Configured"}}
+	for _, id := range recent {
+		parts := strings.SplitN(id, "|", 2)
+		desc := "recently used"
+		if len(parts) == 2 {
+			desc = describePricing(parts[1])
+		}
+		o.append("★ "+id, fmt.Sprintf("Recent pick:\n  provider: %s\n  model:    %s\n  pricing:  %s",
+			safePick(parts, 0), safePick(parts, 1), desc))
+	}
+	if len(recent) == 0 {
+		o.append("(no recent — switch a model to populate)",
+			"Recent models will appear here once you switch via /model.")
+	}
+	o.finishTab()
 	for _, p := range e.Router.Providers() {
 		marker := "○"
 		if p.ID() == e.ProviderID() {
@@ -395,25 +534,45 @@ func overlayModels(e *engine.Engine) *overlay {
 			avail = styleOk.Render("[ready]")
 		}
 		for _, m := range p.Models() {
-			o.items = append(o.items, fmt.Sprintf("%s %s/%s  %s", marker, p.ID(), m, avail))
+			label := fmt.Sprintf("%s %s/%s  %s", marker, p.ID(), m, avail)
 			defaultMark := ""
 			if p.DefaultModel() == m {
 				defaultMark = " (default)"
 			}
-			o.detail = append(o.detail, fmt.Sprintf("Provider:  %s\nID:        %s\nModel:     %s%s\nAvailable: %v\nPricing:   %s\n\nPricing reflects USD per million tokens. Local models (Ollama) are 0.",
+			o.append(label, fmt.Sprintf("Provider:  %s\nID:        %s\nModel:     %s%s\nAvailable: %v\nPricing:   %s\n\nPricing reflects USD per million tokens. Local models (Ollama) are 0.",
 				p.Name(), p.ID(), m, defaultMark, p.Available(), describePricing(m)))
 		}
 	}
+	o.finishTab()
+	for _, p := range e.Router.Providers() {
+		for _, m := range p.Models() {
+			o.append(fmt.Sprintf("%s/%s", p.ID(), m),
+				fmt.Sprintf("%s\n%s\n(no availability check)", p.Name(), m))
+		}
+	}
+	o.finishTab()
 	o.onSelect = func(sel string) string {
-		fields := strings.Fields(sel)
-		if len(fields) < 2 {
+		text := strings.TrimSpace(strings.TrimPrefix(sel, "★"))
+		if strings.HasPrefix(text, "○ ") || strings.HasPrefix(text, "● ") {
+			text = strings.TrimSpace(text[2:])
+		}
+		if idx := strings.Index(text, "  "); idx > 0 {
+			text = text[:idx]
+		}
+		parts := strings.SplitN(text, "/", 2)
+		if len(parts) != 2 {
 			return ""
 		}
-		model := fields[len(fields)-1]
-		provider := fields[len(fields)-2]
-		return provider + "|" + model
+		return parts[0] + "|" + parts[1]
 	}
 	return o
+}
+
+func safePick(parts []string, i int) string {
+	if i < len(parts) {
+		return parts[i]
+	}
+	return ""
 }
 
 func describePricing(model string) string {
@@ -425,14 +584,6 @@ func describePricing(model string) string {
 }
 
 func overlayHelp() *overlay {
-	cat := "Session"
-	cats := []slashCmd{}
-	for _, c := range slashCommands {
-		if c.Category != cat {
-			cat = c.Category
-		}
-		cats = append(cats, c)
-	}
 	o := &overlay{title: "Help", tabs: append([]string{}, slashCategories...)}
 	byCat := map[string][]slashCmd{}
 	for _, c := range slashCommands {
@@ -442,23 +593,38 @@ func overlayHelp() *overlay {
 		}
 		byCat[cat] = append(byCat[cat], c)
 	}
-	for _, c := range slashCategories {
-		for _, cmd := range byCat[c] {
-			o.items = append(o.items, fmt.Sprintf("%-14s  %s", cmd.Name, cmd.Desc))
-			shortcut := ""
-			if cmd.Shortcut != "" {
-				shortcut = "  (" + cmd.Shortcut + ")"
-			}
-			o.detail = append(o.detail, fmt.Sprintf(
-				"Command:     %s\nCategory:    %s\nDescription: %s%s\n\nUsage: type / then press Tab to autocomplete.",
-				cmd.Name, cmd.Category, cmd.Desc, shortcut))
+	emit := func(c slashCmd) {
+		shortcut := ""
+		if c.Shortcut != "" {
+			shortcut = "  (" + c.Shortcut + ")"
 		}
+		o.append(fmt.Sprintf("%-14s  %s", c.Name, c.Desc),
+			fmt.Sprintf("Command:     %s\nCategory:    %s\nDescription: %s%s\n\nUsage: type / then press Tab to autocomplete.",
+				c.Name, c.Category, c.Desc, shortcut))
+	}
+	for _, cat := range slashCategories {
+		for _, cmd := range byCat[cat] {
+			emit(cmd)
+		}
+		o.finishTab()
 	}
 	return o
 }
 
 func overlayDiff(g *knowledge.Git) *overlay {
-	return &overlay{title: "Git diff", body: g.Diff()}
+	body := g.Diff()
+	if body == "" {
+		body = "(working tree clean)"
+	}
+	return &overlay{title: "Git diff · unstaged", body: body, tabs: []string{"Unstaged"}, tabEnds: []int{1}}
+}
+
+func overlayDiffBase(g *knowledge.Git, base string) *overlay {
+	body := g.DiffBase(base)
+	if body == "" {
+		body = fmt.Sprintf("(no diff against %s)", base)
+	}
+	return &overlay{title: "Git diff · vs " + base, body: body, tabs: []string{base}, tabEnds: []int{1}}
 }
 
 func overlayDebug(e *engine.Engine) *overlay {
@@ -474,6 +640,8 @@ func overlayDebug(e *engine.Engine) *overlay {
 	fmt.Fprintf(&b, "session:     %s\n", e.SessionID())
 	pr := pricingFor(e.Model)
 	fmt.Fprintf(&b, "model cost:  in $%.2f / out $%.2f per 1M tok\n", pr.Input, pr.Output)
+	fmt.Fprintf(&b, "reasoning:   %s\n", e.ReasoningEffort())
+	fmt.Fprintf(&b, "theme:       %s\n", CurrentTheme())
 	return &overlay{title: "Debug info", body: b.String()}
 }
 
@@ -484,9 +652,44 @@ func overlayCost(e *engine.Engine) *overlay {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Model:           %s\nProvider:        %s\n", e.Model, e.ProviderID())
 	fmt.Fprintf(&b, "Input tokens:    %d\nOutput tokens:   %d\nTotal tokens:    %d\n", u.InputTokens, u.OutputTokens, u.InputTokens+u.OutputTokens)
+	if u.CacheReadTokens > 0 || u.ReasoningTokens > 0 {
+		fmt.Fprintf(&b, "Cache read:      %d\nReasoning:       %d\n", u.CacheReadTokens, u.ReasoningTokens)
+	}
 	fmt.Fprintf(&b, "\nPricing (per 1M tok):\n  input:   $%.2f\n  output:  $%.2f\n", pr.Input, pr.Output)
 	fmt.Fprintf(&b, "\nEstimated cost:  $%.4f\n", cost)
 	return &overlay{title: "Token usage & cost", body: b.String()}
+}
+
+func overlayStats(a *app) *overlay {
+	sessions, _ := a.engine.Store.ListSessions()
+	rate := 1.0
+	if n := a.successCnt + a.failCnt; n > 0 {
+		rate = float64(a.successCnt) / float64(n)
+	}
+	u := a.engine.Usage()
+	elapsed := time.Since(a.startedAt).Truncate(time.Second)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Session:\n")
+	fmt.Fprintf(&b, "  id             %s\n", a.engine.SessionID())
+	fmt.Fprintf(&b, "  elapsed        %s\n", elapsed)
+	fmt.Fprintf(&b, "  turns          %d\n", a.turns)
+	fmt.Fprintf(&b, "  tool calls     %d (%d ok / %d failed)\n", a.successCnt+a.failCnt, a.successCnt, a.failCnt)
+	fmt.Fprintf(&b, "  tool success   %.0f%%\n", rate*100)
+	fmt.Fprintf(&b, "\nTokens (last turn):\n")
+	fmt.Fprintf(&b, "  input / output %d → %d\n", u.InputTokens, u.OutputTokens)
+	if u.CacheReadTokens > 0 || u.ReasoningTokens > 0 {
+		fmt.Fprintf(&b, "  cache / reason %d / %d\n", u.CacheReadTokens, u.ReasoningTokens)
+	}
+	fmt.Fprintf(&b, "\nTokens (cumulative):\n")
+	fmt.Fprintf(&b, "  total          %d\n", a.totalTokens)
+	fmt.Fprintf(&b, "  cost           $%.4f\n", a.totalCost)
+	fmt.Fprintf(&b, "\nKnowledge:\n")
+	fmt.Fprintf(&b, "  claims         %d\n", len(a.engine.Store.State.Claims))
+	fmt.Fprintf(&b, "  unknowns       %d\n", len(a.engine.Store.State.Unknowns))
+	fmt.Fprintf(&b, "  evidence       %d\n", len(a.engine.Store.State.Evidence))
+	fmt.Fprintf(&b, "  actions        %d\n", len(a.engine.Store.State.Actions))
+	fmt.Fprintf(&b, "\nSessions on disk:  %d\n", len(sessions))
+	return &overlay{title: "Session stats", body: b.String()}
 }
 
 func overlayGoal(e *engine.Engine) *overlay {
@@ -563,10 +766,19 @@ func overlayAgents(e *engine.Engine) *overlay {
 }
 
 func overlayThemes() *overlay {
-	return &overlay{
-		title: "Themes",
-		body: "• astra-dark  (default) — deep space + violet\n• astra-light (planned)\n• dracula     (built-in via chroma)\n• github-dark (built-in via chroma)\n\nToggle with /theme astra-dark — full theme switching ships next.",
+	names := ThemeNames()
+	var b strings.Builder
+	current := CurrentTheme()
+	fmt.Fprintf(&b, "current: %s\n\nregistered themes:\n", current)
+	for _, n := range names {
+		marker := "  "
+		if n == current {
+			marker = "● "
+		}
+		fmt.Fprintf(&b, "  %s%s\n", marker, n)
 	}
+	b.WriteString("\nUsage:\n  /theme list           show this overlay\n  /theme <name>         switch theme (astra-dark / astra-light / mono)")
+	return &overlay{title: "Themes", body: b.String()}
 }
 
 func overlayFile(e *engine.Engine, path string) *overlay {

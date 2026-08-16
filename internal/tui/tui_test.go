@@ -104,10 +104,41 @@ func TestBashModeToggle(t *testing.T) {
 }
 
 func TestPaletteFuzzy(t *testing.T) {
-	p := palette{filtered: builtinPaletteEntries()}
+	p := palette{filtered: builtinPaletteOnce()}
 	p.input = "ses"
 	p.refilter()
 	if len(p.filtered) == 0 {
 		t.Fatal("palette did not match 'ses'")
+	}
+}
+
+func TestThemeSwitch(t *testing.T) {
+	if CurrentTheme() != "astra-dark" {
+		t.Fatalf("default theme should be astra-dark, got %q", CurrentTheme())
+	}
+	if SetTheme("nope") != "" {
+		t.Fatal("unknown theme name should be rejected")
+	}
+	defer SetTheme("astra-dark")
+	if applied := SetTheme("astra-light"); applied != "astra-light" {
+		t.Fatalf("SetTheme = %q", applied)
+	}
+	if CurrentTheme() != "astra-light" {
+		t.Fatalf("theme did not switch, %q", CurrentTheme())
+	}
+}
+
+func TestReverseSearch(t *testing.T) {
+	c := newComposer(80)
+	c.history = []string{"hi there", "find foo bar", "another line", "foo baz"}
+	c.searchQuery = "foo"
+	c.recomputeSearch()
+	if len(c.searchHits) != 2 {
+		t.Fatalf("expected 2 hits for 'foo', got %d", len(c.searchHits))
+	}
+	c.searchQuery = "nope"
+	c.recomputeSearch()
+	if len(c.searchHits) != 0 || c.searchPos != -1 {
+		t.Fatalf("expected no hits, got %+v", c.searchHits)
 	}
 }

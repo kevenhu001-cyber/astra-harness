@@ -201,20 +201,23 @@ func (p *palette) View() string {
 }
 
 func fmtCat(c string) string {
-	color := gray
+	pal := activePalette()
+	color := pal.Gray
 	switch c {
 	case "Session":
-		color = cyan
+		color = pal.Cyan
 	case "Knowledge":
-		color = accentHi
+		color = pal.AccentHi
 	case "Model":
-		color = magenta
+		color = pal.Magenta
 	case "Safety":
-		color = red
+		color = pal.Red
 	case "Build":
-		color = green
+		color = pal.Green
+	case "Files":
+		color = pal.CyanHi
 	case "Help":
-		color = yellow
+		color = pal.Yellow
 	}
 	return lipgloss.NewStyle().Foreground(color).Bold(true).Render(padRight(c, 9))
 }

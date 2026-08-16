@@ -55,10 +55,14 @@ type ToolCallDelta struct {
 	Arguments string
 }
 
-// Usage reports token accounting when the provider supplies it.
+// Usage reports token accounting when the provider supplies it. CacheReads
+// and ReasoningTokens are optional fields populated by providers that
+// support prompt caching or reasoning-effort accounting respectively.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 }
 
 // StreamEvent is one event from the streaming provider.

@@ -39,6 +39,7 @@ var slashCommands = []slashCmd{
 	{Name: "/model", Desc: "switch model", Category: "Model"},
 	{Name: "/provider", Desc: "switch provider", Category: "Model"},
 	{Name: "/cost", Desc: "token usage and cost", Category: "Model"},
+	{Name: "/stats", Desc: "session statistics", Category: "Model"},
 	{Name: "/permissions", Desc: "permission mode (ask|allow|deny)", Category: "Safety", Placeholder: "ask|allow|deny"},
 	{Name: "/plan", Desc: "toggle plan mode", Category: "Safety"},
 	{Name: "/add-file", Desc: "@ a file into the prompt", Category: "Files", Placeholder: "path"},
@@ -47,7 +48,11 @@ var slashCommands = []slashCmd{
 	{Name: "/resume", Desc: "resume a session", Category: "Session", Placeholder: "session id"},
 	{Name: "/export", Desc: "export transcript as markdown", Category: "Session"},
 	{Name: "/debug", Desc: "show config and state paths", Category: "Help"},
-	{Name: "/theme", Desc: "switch theme", Category: "Help"},
+	{Name: "/theme", Desc: "switch theme (dark/light/mono)", Category: "Help"},
+	{Name: "/stats", Desc: "session statistics and metrics", Category: "Help"},
+	{Name: "/reasoning", Desc: "set reasoning effort (low|medium|high|xhigh)", Category: "Help"},
+	{Name: "/diff-base", Desc: "diff against base branch (e.g. main)", Category: "Build"},
+	{Name: "/rename", Desc: "rename the active session", Category: "Session"},
 	{Name: "/paste", Desc: "paste-mode toggle", Category: "Help"},
 	{Name: "/mcp", Desc: "manage MCP servers (placeholder)", Category: "Help"},
 	{Name: "/agents", Desc: "spawn / manage sub-agents", Category: "Session"},
@@ -77,6 +82,12 @@ type composer struct {
 	history    []string
 	histIdx    int
 	plain      bool
+
+	// Reverse-i-search (Ctrl+R) state.
+	search      bool
+	searchQuery string
+	searchHits  []int // indexes into history
+	searchPos   int   // position within searchHits
 
 	// Modes
 	bashMode bool
@@ -177,6 +188,52 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 			return "", false, true
 		}
 		return "", false, false
+	}
+
+	// Ctrl+R — enter (or advance) reverse incremental search.
+	if s == "ctrl+r" || c.search {
+		if s == "ctrl+r" && !c.search {
+			c.search = true
+			c.searchQuery = ""
+			c.searchHits = nil
+			c.searchPos = -1
+			c.recomputeSearch()
+			return "", false, true
+		}
+		// We're already in search mode — handle keys here.
+		switch s {
+		case "esc":
+			c.search = false
+			c.searchQuery = ""
+			c.searchHits = nil
+			c.searchPos = -1
+			return "", false, true
+		case "ctrl+r":
+			if len(c.searchHits) > 0 {
+				c.searchPos = (c.searchPos + 1) % len(c.searchHits)
+			}
+			return "", false, true
+		case "ctrl+s":
+			if len(c.searchHits) > 0 {
+				c.searchPos = (c.searchPos - 1 + len(c.searchHits)) % len(c.searchHits)
+			}
+			return "", false, true
+		case "enter":
+			c.commitSearch()
+			return "", false, true
+		case "backspace":
+			if len(c.searchQuery) > 0 {
+				c.searchQuery = c.searchQuery[:len(c.searchQuery)-1]
+				c.recomputeSearch()
+			}
+			return "", false, true
+		}
+		if key.Type == tea.KeyRunes {
+			c.searchQuery += key.String()
+			c.recomputeSearch()
+			return "", false, true
+		}
+		return "", false, true
 	}
 
 	value := c.ta.Value()
@@ -336,6 +393,41 @@ func (c *composer) refreshAt() {
 	}
 }
 
+// recomputeSearch walks the history (most-recent first) and finds lines
+// containing the query. Hits are stored as indexes into c.history.
+func (c *composer) recomputeSearch() {
+	c.searchHits = c.searchHits[:0]
+	if c.searchQuery == "" {
+		c.searchPos = -1
+		return
+	}
+	q := strings.ToLower(c.searchQuery)
+	for i := len(c.history) - 1; i >= 0; i-- {
+		if strings.Contains(strings.ToLower(c.history[i]), q) {
+			c.searchHits = append(c.searchHits, i)
+		}
+	}
+	if len(c.searchHits) > 0 {
+		c.searchPos = 0
+	} else {
+		c.searchPos = -1
+	}
+}
+
+// commitSearch applies the current selection and exits search mode.
+func (c *composer) commitSearch() {
+	if c.searchPos < 0 || c.searchPos >= len(c.searchHits) {
+		c.search = false
+		return
+	}
+	c.ta.SetValue(c.history[c.searchHits[c.searchPos]])
+	c.search = false
+	c.searchQuery = ""
+	c.searchHits = nil
+	c.searchPos = -1
+	c.histIdx = len(c.history)
+}
+
 func (c *composer) complete(name string) {
 	value := c.ta.Value()
 	idx := strings.IndexByte(value, ' ')
@@ -374,6 +466,9 @@ func (c *composer) pushHistory(v string) {
 }
 
 func (c *composer) View(width int) string {
+	if c.search {
+		return c.viewSearch(width)
+	}
 	inner := c.ta.View()
 	boxStyle := styleComposer
 	if c.focused {
@@ -397,7 +492,7 @@ func (c *composer) View(width int) string {
 		popWidth = 78
 	}
 	if c.atShow {
-		b.WriteString(styleTitle.Render(fmtCat("Files")) + " " + styleDim.Render("select a path"))
+		b.WriteString(styleTitle.Render(fmtCat("Files")) + " " + styleDim.Render("select a path · preview shown"))
 		b.WriteString("\n")
 		for i, a := range c.atCandidates {
 			line := fmtCat(a.Kind) + "  " + styleBody.Render(padRight(a.Label, 32))
@@ -409,6 +504,19 @@ func (c *composer) View(width int) string {
 			if i > 9 {
 				b.WriteString(styleDim.Render(fmt.Sprintf("  …+%d more", len(c.atCandidates)-i-1)))
 				break
+			}
+		}
+		// File preview for the highlighted candidate.
+		if c.atSel < len(c.atCandidates) {
+			cand := c.atCandidates[c.atSel]
+			if cand.Kind == "File" {
+				body := previewFile(cand.Insert, 8)
+				if body != "" {
+					b.WriteString(styleFaint.Render("── preview ──"))
+					b.WriteString("\n")
+					b.WriteString(styleDim.Render(body))
+					b.WriteString("\n")
+				}
 			}
 		}
 		b.WriteString(styleDim.Render("↑↓ · ⏎ insert · esc cancel"))
@@ -438,4 +546,29 @@ func (c *composer) View(width int) string {
 		b.WriteString(styleDim.Render("↑↓ · ⏎ run · esc close"))
 	}
 	return b.String()
+}
+
+// viewSearch renders the reverse-i-search status. The actual prompt content
+// is hidden so the user can focus on the match.
+func (c *composer) viewSearch(width int) string {
+	var b strings.Builder
+	var current string
+	var indicator string
+	if c.searchPos >= 0 && c.searchPos < len(c.searchHits) {
+		current = c.history[c.searchHits[c.searchPos]]
+		if len(current) > 100 {
+			current = current[:97] + "…"
+		}
+		indicator = fmt.Sprintf(" [%d/%d]", c.searchPos+1, len(c.searchHits))
+	} else {
+		indicator = " [no matches]"
+	}
+	fmt.Fprintf(&b, "%s(reverse-i-search)`%s':%s\n",
+		styleTitle.Render(""), c.searchQuery, indicator)
+	if current != "" {
+		b.WriteString(styleBody.Render("↳ " + current))
+		b.WriteString("\n")
+	}
+	b.WriteString(styleDim.Render("ctrl+r older · ctrl+s newer · enter commit · esc cancel"))
+	return styleComposerFocused.Width(width - 2).Render(b.String())
 }

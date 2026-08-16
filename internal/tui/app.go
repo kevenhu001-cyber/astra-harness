@@ -61,6 +61,12 @@ type bashDoneMsg struct {
 	err     error
 }
 
+type bashLineMsg struct {
+	cmd string
+	line string
+	stream string // "stdout" | "stderr"
+}
+
 type app struct {
 	root   string
 	engine *engine.Engine
@@ -90,6 +96,10 @@ type app struct {
 	lastUsage   llm.Usage
 	totalCost   float64
 	totalTokens int
+	turns       int
+	successCnt  int
+	failCnt     int
+	startedAt   time.Time
 	quit        bool
 	atBottom    bool
 }
@@ -103,10 +113,11 @@ type askState struct {
 func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(accentHi)
+	sp.Style = lipgloss.NewStyle().Foreground(activePalette().AccentHi)
 	a := &app{
 		root: root, engine: eng, cfg: cfg, events: eng.Events,
 		spinner: sp, mode: modeChat,
+		startedAt: time.Now(),
 	}
 	a.vp = viewport.New(80, 24)
 	a.vp.Style = lipgloss.NewStyle().Padding(0, 1)
@@ -451,18 +462,50 @@ func (a *app) sidebarSelect(it *sidebarItem) {
 	}
 }
 
-// runBash executes a bash-mode command.
+// runBash executes a bash-mode command and streams lines into bashOut.
 func (a *app) runBash(cmd string) tea.Cmd {
 	a.bashOut = ""
 	a.bashErr = nil
 	a.busy = true
 	a.status = "shell: " + cmd
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		out, err := runShellLocal(a.root, cmd, ctx)
-		return bashDoneMsg{cmd: cmd, output: out, success: err == nil, err: err}
+		c, stdoutCh, stderrCh, err := streamShell(ctx, a.root, cmd)
+		if err != nil {
+			return bashDoneMsg{cmd: cmd, success: false, err: err}
+		}
+		var lines []string
+		for stdoutCh != nil || stderrCh != nil {
+			select {
+			case line, ok := <-stdoutCh:
+				if !ok {
+					stdoutCh = nil
+					continue
+				}
+				lines = append(lines, line)
+			case line, ok := <-stderrCh:
+				if !ok {
+					stderrCh = nil
+					continue
+				}
+				lines = append(lines, line)
+			}
+		}
+		err = c.Wait()
+		return bashDoneMsg{cmd: cmd, output: joinLines(lines), success: err == nil, err: err}
 	}
+}
+
+func joinLines(lines []string) string {
+	out := ""
+	for i, l := range lines {
+		if i > 0 {
+			out += "\n"
+		}
+		out += l
+	}
+	return out
 }
 
 func runShellLocal(root, command string, ctx context.Context) (string, error) {
@@ -592,6 +635,23 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		a.addSystem("context compacted: " + summary)
 	case "/diff":
 		a.overlay = overlayDiff(a.engine.Git)
+	case "/diff-base":
+		base := a.engine.Git.DefaultBranch()
+		if args != "" {
+			base = args
+		}
+		a.overlay = overlayDiffBase(a.engine.Git, base)
+	case "/rename":
+		if args == "" {
+			a.toast = "usage: /rename <new-session-id>"
+			a.toastUntil = time.Now().Add(3 * time.Second)
+		} else {
+			if err := a.engine.RenameSession(args); err != nil {
+				a.addError("rename: " + err.Error())
+			} else {
+				a.addSystem("session renamed → " + args)
+			}
+		}
 	case "/sessions":
 		a.overlay = overlaySessions(a.engine)
 	case "/resume":
@@ -607,8 +667,31 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		a.overlay = overlayDebug(a.engine)
 	case "/cost":
 		a.overlay = overlayCost(a.engine)
+	case "/stats":
+		a.overlay = overlayStats(a)
+	case "/reasoning":
+		if args == "" {
+			a.overlay = &overlay{title: "Reasoning effort",
+				body: fmt.Sprintf("current: %s\n\nlow / medium / high / xhigh", a.engine.ReasoningEffort())}
+		} else {
+			if err := a.engine.SetReasoningEffort(args); err != nil {
+				a.addError(err.Error())
+			} else {
+				a.addSystem("reasoning effort: " + args)
+			}
+		}
 	case "/theme":
-		a.overlay = overlayThemes()
+		if args == "" || args == "list" {
+			a.overlay = overlayThemes()
+		} else {
+			parts := strings.Fields(args)
+			name := parts[0]
+			if applied := SetTheme(name); applied != "" {
+				a.addSystem("theme: " + applied)
+			} else {
+				a.addError("unknown theme: " + name + " (try /theme list)")
+			}
+		}
 	case "/paste":
 		a.addSystem("paste mode is on — multi-line entry captures until you press esc twice")
 		a.composer.plain = true
@@ -765,6 +848,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			})
 			a.streaming = nil
 		}
+		a.turns++
 		a.status = "ready"
 	case engine.EvToolStart:
 		data, _ := ev.Data.(map[string]any)
@@ -786,6 +870,11 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 				a.items[i].rendered = a.renderTool(name, success, output)
 				break
 			}
+		}
+		if success {
+			a.successCnt++
+		} else {
+			a.failCnt++
 		}
 		a.status = "ready"
 	case engine.EvPermission:
@@ -922,6 +1011,11 @@ func (a *app) renderHeader() string {
 		b.WriteString(styleDim.Render("◆"))
 		b.WriteString(styleValue.Render(fmt.Sprintf(" %.0f%% ", g.Progress*100)))
 	}
+	if e := a.engine.ReasoningEffort(); e != "" && e != "medium" {
+		b.WriteString("  ")
+		b.WriteString(styleDim.Render("reason="))
+		b.WriteString(styleEmph.Render(e))
+	}
 	return styleHeaderRow.Render(b.String())
 }
 
@@ -953,6 +1047,12 @@ func (a *app) renderStatusBar() string {
 	}
 	if a.lastUsage.InputTokens > 0 || a.lastUsage.OutputTokens > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("↻ %d→%d tok", a.lastUsage.InputTokens, a.lastUsage.OutputTokens))
+		if a.lastUsage.CacheReadTokens > 0 {
+			rightParts = append(rightParts, styleOk.Render(fmt.Sprintf("cache %d", a.lastUsage.CacheReadTokens)))
+		}
+		if a.lastUsage.ReasoningTokens > 0 {
+			rightParts = append(rightParts, styleWarn.Render(fmt.Sprintf("reason %d", a.lastUsage.ReasoningTokens)))
+		}
 		rightParts = append(rightParts, fmt.Sprintf("$ $%.4f", a.totalCost))
 	}
 	right := strings.Join(rightParts, "  ")

@@ -33,13 +33,29 @@ Agent 是可替换、可销毁的计算资源；持久化的系统智能存在�
 
   | 类别 | 命令 |
   | --- | --- |
-  | Session | `/help /status /goal /claims /unknowns /evidence /actions /events /sessions /resume /export /clear /new /quit` |
+  | Session | `/help /status /goal /claims /unknowns /evidence /actions /events /sessions /resume /rename /export /clear /new /quit` |
   | Knowledge | `/tree` 项目文件树 |
-  | Build | `/init /index /verify /commit /branch /diff` |
-  | Model | `/model /provider /cost` |
+  | Build | `/init /index /verify /commit /branch /diff /diff-base [base]` |
+  | Model | `/model /provider /cost /stats /reasoning [low|medium|high|xhigh]` |
   | Safety | `/permissions /plan /undo` |
   | Files | `/add-file` 直接预览文件 |
-  | Help | `/theme /paste /mcp /agents /tasks /debug`
+  | Help | `/theme [name] /paste /mcp /agents /tasks /debug`
+
+## CodeX 对齐
+
+Astra 的 TUI 与 CodeX / OpenCode 共享同样的输入模型，并针对 Astra 的不确定性内核做了扩展：
+
+- **可切换主题**：`/theme astra-dark | astra-light | mono` 实时重绘所有 chip / box / diff 样式，`CurrentTheme()` 在 `/debug` 中可见
+- **Ctrl+R 反向增量搜索**：bash/zsh-style `fzf`-like 搜索 composer 历史，Ctrl+R 上一条、Ctrl+S 下一条、Enter 提交、Esc 取消
+- **Bash 流式输出**：`!` 模式通过 `cmd.StdoutPipe()` + `bufio.Scanner` 行级推送，命令未结束前就能看到部分结果
+- **@-file live 预览**：在 @-completion 弹层里选中候选时，下方显示该文件的前 8 行（行号 + 截断），无需切换 sidebar
+- **Tabbed overlays**：`/claims /unknowns /evidence /actions /events /sessions /help /models` 都支持 `←/→/数字键` 切换分组（如 Claims = By status / By confidence、Models = Recent / Available / Configured），j/k 只在当前分组内循环
+- **Recent models**：`/model` 后切换过的 provider|model 自动写入 `.astra/config.json`，下次启动可一键回到
+- **Reasoning effort chip**：状态栏实时显示 `reason=high`（o-series），`/reasoning low|medium|high|xhigh` 调整并持久化
+- **Cache / reasoning token chip**：在底部状态栏显示 `cache N` `reason N`，由 Provider 自行上报 `llm.Usage.CacheReadTokens / ReasoningTokens`
+- **Stats overlay（`/stats`）**：当前 session 的 turns / 工具成功率 / token / cost / 知识存量 / 磁盘上 sessions 总数
+- **Diff vs base**：`/diff` 仍然是 unstaged，`/diff-base [main]` 显示 HEAD vs base 分支
+- **会话改名**：`/rename <new-id>`（路径分隔符和 `..` 会被拒绝）
 - **State Core**：`.astra/` 下的 Event Sourcing（`events.jsonl`）+ 物化状态（`state.json`），可回放、可恢复
 - **Knowledge Engine**：文件/符号/测试索引（Go、Rust、Python、TS/JS、Java、Kotlin、C/C++、C#、PHP、Ruby），ripgrep 检索 + 符号匹配排序
 - **Uncertainty Engine**：`priority = impact × uncertainty × dependency_weight ÷ resolution_cost`
