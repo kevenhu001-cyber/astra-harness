@@ -68,8 +68,8 @@ type bashDoneMsg struct {
 }
 
 type bashLineMsg struct {
-	cmd string
-	line string
+	cmd    string
+	line   string
 	stream string // "stdout" | "stderr"
 }
 
@@ -89,27 +89,27 @@ type app struct {
 	overlay       *overlay
 	spinner       spinner.Model
 
-	mode        string
-	busy        bool
-	busyAt      time.Time
-	pendingPerm *engine.PermissionRequest
-	pendingAsk  *askState
-	bashOut     string
-	bashErr     error
-	status      string
-	toast       string
-	toastUntil  time.Time
-	lastUsage   llm.Usage
-	totalCost   float64
-	totalTokens int
-	turns       int
-	successCnt  int
-	failCnt     int
-	startedAt   time.Time
-	quit        bool
-	atBottom    bool
-	userEmail   string
-	deviceFlow  *auth.DeviceFlow
+	mode         string
+	busy         bool
+	busyAt       time.Time
+	pendingPerm  *engine.PermissionRequest
+	pendingAsk   *askState
+	bashOut      string
+	bashErr      error
+	status       string
+	toast        string
+	toastUntil   time.Time
+	lastUsage    llm.Usage
+	totalCost    float64
+	totalTokens  int
+	turns        int
+	successCnt   int
+	failCnt      int
+	startedAt    time.Time
+	quit         bool
+	atBottom     bool
+	userEmail    string
+	deviceFlow   *auth.DeviceFlow
 	loginOverlay *loginOverlay
 }
 
@@ -1107,10 +1107,10 @@ func (a *app) renderHeader() string {
 		mode = "deny"
 	}
 	b.WriteString("  ")
-	b.WriteString(styleDim.Render("["+mode+"]"))
+	b.WriteString(styleDim.Render("[" + mode + "]"))
 	if br := a.engine.Git.BranchOr(""); br != "" {
 		b.WriteString("  ")
-		b.WriteString(styleDim.Render("⎇ "+br))
+		b.WriteString(styleDim.Render("⎇ " + br))
 	}
 	if g := a.engine.Store.ActiveGoal(); g != nil {
 		b.WriteString("  ")
@@ -1183,8 +1183,12 @@ func (a *app) renderStatusBar() string {
 		if leftW > maxLeft {
 			left = truncate(left, maxLeft)
 			leftW = lipgloss.Width(left)
-			pad = widthAvail - leftW - rightW - 1
 		}
+	}
+	// Re-clamp after trimming: truncate() counts runes, not display columns,
+	// so wide characters can still push pad negative (strings.Repeat panics).
+	if pad < 1 {
+		pad = 1
 	}
 	line := left + strings.Repeat(" ", pad) + right
 	return styleStatusBar.Width(a.widthAvail()).Render(line)
@@ -1264,7 +1268,7 @@ func (a *app) renderItem(it *chatItem) string {
 		return chip(it.kind, it.kind) + " " + styleDim.Render(it.raw)
 	case "bash":
 		return styleToolBox.Width(a.width - 4).Render(
-			styleKey.Render("$")+" "+styleTitle.Render(it.meta) + "\n\n" +
+			styleKey.Render("$") + " " + styleTitle.Render(it.meta) + "\n\n" +
 				renderDiff(it.raw, ""))
 	default:
 		return it.raw

@@ -52,6 +52,18 @@ func TestAppRender(t *testing.T) {
 	}
 }
 
+func TestStatusBarNarrowWideChars(t *testing.T) {
+	a := newTestApp(t)
+	a.width = 40
+	a.status = strings.Repeat("界", 30) // wide glyphs: rune-truncation can exceed column budget
+	a.lastUsage = llm.Usage{InputTokens: 1000, OutputTokens: 1000}
+	a.totalCost = 0.5
+	out := a.renderStatusBar()
+	if out == "" {
+		t.Fatal("status bar rendered empty")
+	}
+}
+
 func TestOverlayHelpCyclesTabs(t *testing.T) {
 	a := newTestApp(t)
 	a.overlay = overlayHelp()
