@@ -128,6 +128,23 @@ func TestMeWithBearer(t *testing.T) {
 	}
 }
 
+func TestMeNullUserReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"user": nil})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	u, err := c.Me(context.Background(), "bad")
+	if err != nil {
+		t.Fatalf("me err = %v", err)
+	}
+	if u != nil {
+		t.Fatalf("me = %+v, want nil", u)
+	}
+}
+
 func TestMeReturnsDisplayName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

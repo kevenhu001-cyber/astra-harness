@@ -110,6 +110,9 @@ func (c *Client) Me(ctx context.Context, token string) (*User, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	if out.User.ID == "" {
+		return nil, nil // 200 + user:null means not authenticated
+	}
 	return &out.User, nil
 }
 

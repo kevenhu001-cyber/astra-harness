@@ -271,6 +271,22 @@ func TestDisplayNameInMe(t *testing.T) {
 	}
 }
 
+func TestMeUnauthenticatedReturnsNull(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	r, err := http.Get(ts.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	raw, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("me = %d, want 200", r.StatusCode)
+	}
+	if !strings.Contains(string(raw), `"user":null`) {
+		t.Fatalf("me body = %s, want user:null", raw)
+	}
+}
+
 func TestAccountUpdateDisplayName(t *testing.T) {
 	ts, store, _ := newTestServer(t)
 	store.CreateUser(&User{ID: "u1", Email: "u@b.co", PasswordHash: mustHash(t, "password123")})

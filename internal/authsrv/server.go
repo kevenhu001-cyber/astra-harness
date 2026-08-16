@@ -324,7 +324,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	user := s.currentUser(r)
 	if user == nil {
-		writeErr(w, http.StatusUnauthorized, "not authenticated")
+		// 200 + user:null instead of 401 so the login/account pages do not
+		// produce scary console errors for the "already signed in?" check.
+		writeJSON(w, http.StatusOK, map[string]any{"user": nil})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": toPublic(user)})

@@ -606,6 +606,9 @@ func cmdWhoami() {
 		fmt.Printf("%s (cached; server unreachable: %v)\n", cred.User.Email, err)
 		return
 	}
+	if u == nil {
+		fatal("session invalid or expired — run `astra login`")
+	}
 	fmt.Printf("%s (%s)\n", u.Email, cred.Server)
 }
 
