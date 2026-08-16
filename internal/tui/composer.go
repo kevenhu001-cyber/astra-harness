@@ -306,6 +306,9 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		c.show = false
 		c.atShow = false
 		return out, true, true
+	case "ctrl+j":
+		c.ta.InsertString("\n")
+		return "", false, true
 	case "alt+enter", "alt+ctrl+j":
 		c.ta.InsertString("\n")
 		return "", false, true

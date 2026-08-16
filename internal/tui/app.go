@@ -107,6 +107,10 @@ type app struct {
 	failCnt      int
 	startedAt    time.Time
 	quit         bool
+	quitArmed    bool
+	quitArmedAt  time.Time
+	escArmed     bool
+	escArmedAt   time.Time
 	atBottom     bool
 	userEmail    string
 	deviceFlow   *auth.DeviceFlow
@@ -377,6 +381,13 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Global shortcuts.
+	now := time.Now()
+	if a.quitArmed && now.Sub(a.quitArmedAt) > 3*time.Second {
+		a.quitArmed = false
+	}
+	if a.escArmed && now.Sub(a.escArmedAt) > 3*time.Second {
+		a.escArmed = false
+	}
 	switch s {
 	case "ctrl+c":
 		if a.busy {
@@ -385,13 +396,37 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.toastUntil = time.Now().Add(2 * time.Second)
 			return a, nil
 		}
-		a.quit = true
-		return a, tea.Quit
+		if a.quitArmed {
+			a.quit = true
+			return a, tea.Quit
+		}
+		a.quitArmed = true
+		a.quitArmedAt = now
+		a.status = "ctrl+c again to quit"
+		a.toastUntil = now.Add(3 * time.Second)
+		return a, nil
+	case "esc":
+		if !a.busy && a.composer.Value() == "" {
+			if a.escArmed {
+				a.escArmed = false
+				return a, a.executeCommand("/undo")
+			}
+			a.escArmed = true
+			a.escArmedAt = now
+			a.status = "esc esc to edit previous message"
+			a.toastUntil = now.Add(3 * time.Second)
+			return a, nil
+		}
 	case "ctrl+d":
 		if !a.busy {
 			a.quit = true
 			return a, tea.Quit
 		}
+	default:
+		a.quitArmed = false
+		a.escArmed = false
+	}
+	switch s {
 	case "ctrl+l":
 		a.items = nil
 		a.streaming = nil
@@ -407,7 +442,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.palette.Show()
 		return a, nil
 	case "ctrl+t":
-		a.executeCommand("/new")
+		a.overlay = overlayTranscript(a)
 		return a, nil
 	case "ctrl+u":
 		a.vp.LineUp(10)
@@ -417,7 +452,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case "?":
 		if a.composer.Value() == "" {
-			a.overlay = overlayHelp()
+			a.overlay = overlayShortcuts()
 			return a, nil
 		}
 	case "f1":
@@ -1184,11 +1219,14 @@ func (a *app) widthAvail() int {
 
 func (a *app) renderStatusBar() string {
 	left := a.status
-	if left == "" {
-		left = "? for shortcuts · esc edit previous · ctrl+r history search"
-	}
-	if time.Now().Before(a.toastUntil) {
+	if a.quitArmed {
+		left = "ctrl+c again to quit"
+	} else if a.escArmed {
+		left = "esc esc to edit previous message"
+	} else if time.Now().Before(a.toastUntil) {
 		left = a.toast
+	} else if left == "" {
+		left = "? for shortcuts"
 	}
 	rightParts := []string{
 		fmt.Sprintf("%s/%s", a.engine.ProviderID(), a.engine.Model),

@@ -640,6 +640,51 @@ func overlayHelp() *overlay {
 	return o
 }
 
+// overlayShortcuts mirrors Codex's "? for shortcuts" overlay: the same
+// keybinding rows and wording, with the Astra product name kept in place.
+func overlayShortcuts() *overlay {
+	body := strings.Join([]string{
+		"/  for commands",
+		"!  for shell commands",
+		"ctrl+j  for newline",
+		"tab  to submit message",
+		"@  for file paths",
+		"ctrl+v  to paste images",
+		"ctrl+g  to edit in external editor",
+		"esc esc  to edit previous message",
+		"ctrl+r  search history",
+		"ctrl+c  to exit",
+		"ctrl+t  to view transcript",
+		"alt+,  reasoning down",
+		"alt+.  reasoning up",
+		"",
+		"customize shortcuts with /keymap",
+	}, "\n")
+	return &overlay{title: "Shortcuts", body: body, footer: "esc close"}
+}
+
+func overlayTranscript(a *app) *overlay {
+	var b strings.Builder
+	for _, it := range a.items {
+		switch it.kind {
+		case "user":
+			fmt.Fprintf(&b, "> %s\n\n", it.raw)
+		case "assistant":
+			b.WriteString(it.raw + "\n\n")
+		case "system":
+			b.WriteString(it.raw + "\n\n")
+		case "tool":
+			fmt.Fprintf(&b, "[tool] %s\n%s\n\n", it.meta, it.raw)
+		default:
+			b.WriteString(it.raw + "\n\n")
+		}
+	}
+	if b.Len() == 0 {
+		b.WriteString("(empty transcript)")
+	}
+	return &overlay{title: "Transcript", body: b.String(), footer: "esc close"}
+}
+
 func overlayDiff(g *knowledge.Git) *overlay {
 	body := g.Diff()
 	if body == "" {
