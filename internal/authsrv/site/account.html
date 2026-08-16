@@ -18,11 +18,11 @@
       <a class="brand" href="/"><span class="brand-mark">A</span><span>Astra</span></a>
       <nav class="nav" aria-label="Primary">
         <a href="/">Home</a>
-        <a href="/login.html">Sign in</a>
-        <a href="/account.html" aria-current="page">Account</a>
+        <a href="/login">Sign in</a>
+        <a href="/account" aria-current="page">Account</a>
       </nav>
       <div class="nav-cta">
-        <a class="btn btn-quiet" href="/authorize.html">Authorize another device</a>
+        <a class="btn btn-quiet" href="/authorize">Authorize another device</a>
       </div>
     </div>
   </header>
@@ -34,7 +34,7 @@
         <nav>
           <a href="#profile" class="is-current"><span>01</span>Profile</a>
           <a href="#tokens"><span>02</span>API tokens</a>
-          <a href="/authorize.html"><span>03</span>Authorize device</a>
+          <a href="/authorize"><span>03</span>Authorize device</a>
         </nav>
         <p class="note">Need help? Write to the Astra maintainers on <a href="https://github.com/kevenhu001-cyber/astra-harness">GitHub</a>.</p>
       </aside>
@@ -79,7 +79,7 @@
             <p class="section-title">Session</p>
             <div class="actions-row">
               <button class="btn btn-quiet" id="logoutBtn" type="button">Sign out of this browser</button>
-              <a class="btn btn-quiet" href="/authorize.html">Authorize another device</a>
+              <a class="btn btn-quiet" href="/authorize">Authorize another device</a>
             </div>
           </div>
         </div>
@@ -97,13 +97,13 @@
         <div class="footer-col">
           <h2>Product</h2>
           <a href="/">Home</a>
-          <a href="/login.html">Sign in</a>
-          <a href="/account.html">Account</a>
+          <a href="/login">Sign in</a>
+          <a href="/account">Account</a>
         </div>
         <div class="footer-col">
           <h2>Account</h2>
-          <a href="/account.html">My account</a>
-          <a href="/authorize.html">Authorize device</a>
+          <a href="/account">My account</a>
+          <a href="/authorize">Authorize device</a>
         </div>
         <div class="footer-col">
           <h2>Run</h2>
@@ -213,7 +213,7 @@
 
       document.getElementById('logoutBtn').addEventListener('click', async function () {
         try { await A.api('/logout'); } catch (e) { /* ignore */ }
-        window.location.href = '/login.html';
+        window.location.href = '/login';
       });
     })();
   </script>

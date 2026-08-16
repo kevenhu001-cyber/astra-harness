@@ -65,9 +65,25 @@ func (s *Server) Handler() http.Handler {
 		// Only serve known static pages; everything else 404s cleanly.
 		switch r.URL.Path {
 		case "/", "/index.html":
+			if r.URL.Path == "/index.html" {
+				http.Redirect(w, r, "/", http.StatusMovedPermanently)
+				return
+			}
 			http.ServeFileFS(w, r, sub, "index.html")
-		case "/login.html", "/authorize.html", "/account.html", "/favicon.svg":
-			http.ServeFileFS(w, r, sub, strings.TrimPrefix(r.URL.Path, "/"))
+		case "/login":
+			http.ServeFileFS(w, r, sub, "login.html")
+		case "/authorize":
+			http.ServeFileFS(w, r, sub, "authorize.html")
+		case "/account":
+			http.ServeFileFS(w, r, sub, "account.html")
+		case "/favicon.svg":
+			http.ServeFileFS(w, r, sub, "favicon.svg")
+		case "/login.html":
+			http.Redirect(w, r, "/login", http.StatusMovedPermanently)
+		case "/authorize.html":
+			http.Redirect(w, r, "/authorize", http.StatusMovedPermanently)
+		case "/account.html":
+			http.Redirect(w, r, "/account", http.StatusMovedPermanently)
 		default:
 			fileServer.ServeHTTP(w, r)
 		}
@@ -288,7 +304,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "session failed")
 		return
 	}
-	http.Redirect(w, r, "/account.html", http.StatusFound)
+	http.Redirect(w, r, "/account", http.StatusFound)
 }
 
 // --- login / logout / me ---
@@ -353,7 +369,7 @@ func (s *Server) handleDeviceCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_code":      g.DeviceCode,
 		"user_code":        g.UserCode,
-		"verification_uri": base + "/authorize.html?code=" + url.QueryEscape(g.UserCode),
+		"verification_uri": base + "/authorize?code=" + url.QueryEscape(g.UserCode),
 		"expires_in":       int(deviceExpiry.Seconds()),
 		"interval":         deviceInterval,
 	})

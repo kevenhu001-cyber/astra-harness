@@ -217,7 +217,7 @@ func TestCrossSiteOriginRejected(t *testing.T) {
 
 func TestSitePagesServe(t *testing.T) {
 	ts, _, _ := newTestServer(t)
-	for _, p := range []string{"/", "/login.html", "/authorize.html", "/account.html", "/assets/site.css", "/assets/auth.js", "/favicon.svg"} {
+	for _, p := range []string{"/", "/login", "/authorize", "/account", "/assets/site.css", "/assets/auth.js", "/favicon.svg"} {
 		resp, err := http.Get(ts.URL + p)
 		if err != nil {
 			t.Fatal(err)
@@ -225,6 +225,19 @@ func TestSitePagesServe(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Errorf("%s = %d", p, resp.StatusCode)
+		}
+	}
+	for _, p := range []string{"/login.html", "/authorize.html", "/account.html", "/index.html"} {
+		client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+		resp, err := client.Get(ts.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMovedPermanently {
+			t.Errorf("%s = %d, want 301", p, resp.StatusCode)
 		}
 	}
 }

@@ -18,11 +18,11 @@
       <a class="brand" href="/"><span class="brand-mark">A</span><span>Astra</span></a>
       <nav class="nav" aria-label="Primary">
         <a href="/">Home</a>
-        <a href="/login.html" aria-current="page">Sign in</a>
-        <a href="/account.html">Account</a>
+        <a href="/login" aria-current="page">Sign in</a>
+        <a href="/account">Account</a>
       </nav>
       <div class="nav-cta">
-        <a class="btn btn-primary" href="/authorize.html">Authorize a device</a>
+        <a class="btn btn-primary" href="/authorize">Authorize a device</a>
       </div>
     </div>
   </header>
@@ -102,13 +102,13 @@
         <div class="footer-col">
           <h2>Product</h2>
           <a href="/">Home</a>
-          <a href="/login.html">Sign in</a>
-          <a href="/account.html">Account</a>
+          <a href="/login">Sign in</a>
+          <a href="/account">Account</a>
         </div>
         <div class="footer-col">
           <h2>Account</h2>
-          <a href="/account.html">My account</a>
-          <a href="/authorize.html">Authorize device</a>
+          <a href="/account">My account</a>
+          <a href="/authorize">Authorize device</a>
         </div>
         <div class="footer-col">
           <h2>Run</h2>
@@ -151,7 +151,7 @@
         A.setErr(''); A.setOk('');
         try {
           await A.api('/login', { body: { email: document.getElementById('loginEmail').value, password: document.getElementById('loginPassword').value } });
-          window.location.href = '/account.html';
+          window.location.href = '/account';
         } catch (err) {
           A.setErr(err.message === 'invalid email or password' ? 'Invalid email or password' : err.message);
         }
@@ -187,7 +187,7 @@
         } catch (err) { A.setErr(err.message); }
       });
 
-      A.me().then(function (user) { if (user) window.location.href = '/account.html'; });
+      A.me().then(function (user) { if (user) window.location.href = '/account'; });
     })();
   </script>
 </body>
