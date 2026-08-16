@@ -146,7 +146,31 @@ func indexProgressToStderr() func(done, total int) {
 	}
 }
 
+// ensureLoggedIn gates interactive/agent entry behind the Astra account.
+// It reuses the stored credential when valid, otherwise starts the Codex-style
+// device flow: opens the official site in the browser, waits for approval,
+// saves the token, and only then lets the CLI continue.
+func ensureLoggedIn() {
+	if cred, err := auth.LoadCredential(); err == nil && cred != nil && cred.Token != "" {
+		if cred.ExpiresAt.IsZero() || cred.ExpiresAt.After(time.Now()) {
+			return
+		}
+		_ = auth.ClearCredential()
+	}
+	server := authServer()
+	fmt.Printf("Astra requires sign-in. Opening %s in your browser...\n", server)
+	cred, err := auth.Login(context.Background(), server, os.Stdout)
+	if err != nil {
+		fatal("login required: %v", err)
+	}
+	if err := auth.SaveCredential(cred); err != nil {
+		fatal("save credential: %v", err)
+	}
+	fmt.Printf("Signed in as %s. Starting Astra...\n", cred.User.Email)
+}
+
 func runTUI(prompt string) {
+	ensureLoggedIn()
 	root := mustGetwd()
 	cfg, err := engine.EnsureConfig(root)
 	if err != nil {
@@ -338,6 +362,7 @@ func cmdResume(args []string) {
 	if id == "" {
 		fatal("usage: astra resume <session-id>")
 	}
+	ensureLoggedIn()
 	eng, cfg := loadEngine()
 	defer eng.Close()
 	sess, err := eng.Store.LoadSession(id)
@@ -353,6 +378,7 @@ func cmdResume(args []string) {
 }
 
 func runHeadless(args []string) {
+	ensureLoggedIn()
 	yes := false
 	plan := false
 	permMode := ""

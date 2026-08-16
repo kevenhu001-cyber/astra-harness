@@ -79,7 +79,8 @@ Astra 的 TUI 与 CodeX / OpenCode 共享同样的输入模型，并针对 Astra
 go build -o astra ./cmd/astra
 
 # 或直接使用 CI 产物 / release binaries
-./astra              # 进入 TUI
+# 首次进入 TUI / run / resume 会自动打开官网登录页，授权后跳回 CLI 才能继续
+./astra              # 进入 TUI（未登录会自动开始设备码登录）
 ./astra init         # 初始化 .astra 状态与索引
 ./astra "实现用户登录的 JWT 刷新"   # 带初始任务进入 TUI
 ./astra run "重构数据库层" --yes    # 无头运行，自动批准权限

@@ -19,8 +19,9 @@ import (
 	"time"
 )
 
-// DefaultServer is used when neither config nor env overrides it.
-const DefaultServer = "http://localhost:8080"
+// DefaultServer is used when neither config nor env overrides it. It points at
+// the self-hosted Astra official site/auth server.
+const DefaultServer = "https://topodrive.top/astracode"
 
 // User is the client-safe account shape returned by the auth server.
 type User struct {
