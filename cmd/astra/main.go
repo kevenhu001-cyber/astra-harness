@@ -18,7 +18,7 @@ import (
 	"github.com/kevenhu001-cyber/astra-harness/internal/tui"
 )
 
-const version = "0.1.0"
+var version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {

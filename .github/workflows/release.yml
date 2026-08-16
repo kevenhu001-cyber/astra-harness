@@ -47,8 +47,10 @@ jobs:
       - name: Build
         run: |
           mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then VERSION="0.1.0"; fi
           CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
-            go build -trimpath -ldflags "-s -w" \
+            go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/astra${{ matrix.ext }} ./cmd/astra
 
       - name: Package
