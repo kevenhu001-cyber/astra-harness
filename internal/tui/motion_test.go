@@ -253,12 +253,12 @@ func TestStreamingCommit(t *testing.T) {
 
 func TestFmtElapsedCompact(t *testing.T) {
 	cases := map[time.Duration]string{
-		0:                  "0s",
-		5 * time.Second:    "5s",
-		59 * time.Second:   "59s",
-		time.Minute:        "1m 00s",
-		90 * time.Second:   "1m 30s",
-		time.Hour:          "1h 00m 00s",
+		0:                "0s",
+		5 * time.Second:  "5s",
+		59 * time.Second: "59s",
+		time.Minute:      "1m 00s",
+		90 * time.Second: "1m 30s",
+		time.Hour:        "1h 00m 00s",
 		3*time.Hour + 4*time.Minute + 5*time.Second: "3h 04m 05s",
 	}
 	for d, want := range cases {
@@ -287,13 +287,13 @@ func TestRenderStatusIndicatorBusy(t *testing.T) {
 
 func TestStripOrdinal(t *testing.T) {
 	cases := map[string]string{
-		"1. Sessions tab":     "Sessions tab",
-		"12. edge":            "edge",
-		"  1. Sessions tab":   "Sessions tab",
-		"› 1. Sessions tab":   "Sessions tab",
-		"abc":                 "abc",
-		"  1.1 nested":        "1.1 nested", // "1.1" is not "N." followed by space
-		"  0. zero":           "zero",
+		"1. Sessions tab":   "Sessions tab",
+		"12. edge":          "edge",
+		"  1. Sessions tab": "Sessions tab",
+		"› 1. Sessions tab": "Sessions tab",
+		"abc":               "abc",
+		"  1.1 nested":      "1.1 nested", // "1.1" is not "N." followed by space
+		"  0. zero":         "zero",
 	}
 	for in, want := range cases {
 		if got := stripOrdinal(in); got != want {
@@ -308,9 +308,9 @@ func TestFormatDirectoryDisplay(t *testing.T) {
 		if got := formatDirectoryDisplay(home); got != "~" {
 			t.Fatalf("home dir should render as ~: %q", got)
 		}
-	if got := formatDirectoryDisplay(filepath.Join(home, "proj")); got != "~"+string(os.PathSeparator)+"proj" {
-		t.Fatalf("subdir should render as ~/proj: %q", got)
-	}
+		if got := formatDirectoryDisplay(filepath.Join(home, "proj")); got != "~"+string(os.PathSeparator)+"proj" {
+			t.Fatalf("subdir should render as ~/proj: %q", got)
+		}
 	}
 	if got := formatDirectoryDisplay("/tmp/not-in-home"); got != "/tmp/not-in-home" {
 		t.Fatalf("unrelated path should stay unchanged: %q", got)

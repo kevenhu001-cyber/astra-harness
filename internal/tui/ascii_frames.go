@@ -7,12 +7,12 @@ import "github.com/charmbracelet/lipgloss"
 // so they can sit in the header, status line and startup banner, and they
 // share the app's animation tick with the shimmer band.
 var (
-	framesDots    = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	framesBlocks  = []string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"}
-	framesHash    = []string{"▏", "▎", "▍", "▌", "▋", "▊", "▉", "▊", "▋", "▌", "▍", "▎"}
-	framesShapes  = []string{"◐", "◓", "◑", "◒"}
-	framesPulse   = []string{"·", "•", "●", "○"}
-	allFrameSets  = [][]string{framesDots, framesBlocks, framesHash, framesShapes, framesPulse}
+	framesDots   = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	framesBlocks = []string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"}
+	framesHash   = []string{"▏", "▎", "▍", "▌", "▋", "▊", "▉", "▊", "▋", "▌", "▍", "▎"}
+	framesShapes = []string{"◐", "◓", "◑", "◒"}
+	framesPulse  = []string{"·", "•", "●", "○"}
+	allFrameSets = [][]string{framesDots, framesBlocks, framesHash, framesShapes, framesPulse}
 )
 
 // asciiAnim is a tiny frame player driven by the app's animation tick. It

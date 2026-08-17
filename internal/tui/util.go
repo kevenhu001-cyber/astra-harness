@@ -97,4 +97,3 @@ func padRight(s string, w int) string {
 
 // padLeft zero-pads n to width w.
 func padLeft(n, w int) string { return fmt.Sprintf("%*d", w, n) }
-

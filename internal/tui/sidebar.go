@@ -34,11 +34,11 @@ type sidebarItem struct {
 
 type sidebar struct {
 	visible bool
-	mode   sidebarMode
-	cursor int
-	files  []string
-	width  int
-	height int
+	mode    sidebarMode
+	cursor  int
+	files   []string
+	width   int
+	height  int
 
 	// Tab labels for the mode switcher shown at the top of the sidebar.
 	tabs []string
@@ -59,11 +59,11 @@ type sidebar struct {
 
 func newSidebar(e *engine.Engine) *sidebar {
 	return &sidebar{
-		root:  e.Root,
+		root:   e.Root,
 		engine: e,
-		mode:  sidebarSessions,
-		width: 26,
-		tabs:  []string{"Sessions", "Files", "Knowledge", "Activity"},
+		mode:   sidebarSessions,
+		width:  26,
+		tabs:   []string{"Sessions", "Files", "Knowledge", "Activity"},
 	}
 }
 
@@ -348,7 +348,7 @@ func (s *sidebar) View() string {
 	b.WriteString(styleFaint.Render(strings.Repeat("─", w-2)))
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render(hint))
-	return lipgloss.NewStyle().Width(w).Height(s.height-2).Render(strings.TrimRight(b.String(), "\n"))
+	return lipgloss.NewStyle().Width(w).Height(s.height - 2).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 // HitAt maps a terminal (x,y) screen coordinate to a sidebar item and tab

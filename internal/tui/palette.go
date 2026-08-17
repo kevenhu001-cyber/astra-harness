@@ -174,7 +174,7 @@ func (p *palette) View() string {
 		}
 		shortcut := ""
 		if e.shortcut != "" {
-			shortcut = styleDim.Render("  "+e.shortcut)
+			shortcut = styleDim.Render("  " + e.shortcut)
 		}
 		title := e.title
 		if len(title) > 28 {

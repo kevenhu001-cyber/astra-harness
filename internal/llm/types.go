@@ -60,10 +60,10 @@ type ToolCallDelta struct {
 // and ReasoningTokens are optional fields populated by providers that
 // support prompt caching or reasoning-effort accounting respectively.
 type Usage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
-	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	InputTokens     int `json:"input_tokens"`
+	OutputTokens    int `json:"output_tokens"`
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // UnmarshalJSON tolerates both token-naming conventions seen in the wild:
@@ -72,13 +72,13 @@ type Usage struct {
 // tracking silently reports zero for OpenAI / DeepSeek / Qwen backends.
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		InputTokens            int `json:"input_tokens"`
-		OutputTokens           int `json:"output_tokens"`
-		CacheReadTokens        int `json:"cache_read_tokens"`
-		CacheReadInputTokens   int `json:"cache_read_input_tokens"`
-		ReasoningTokens        int `json:"reasoning_tokens"`
-		PromptTokens           int `json:"prompt_tokens"`
-		CompletionTokens       int `json:"completion_tokens"`
+		InputTokens          int `json:"input_tokens"`
+		OutputTokens         int `json:"output_tokens"`
+		CacheReadTokens      int `json:"cache_read_tokens"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		ReasoningTokens      int `json:"reasoning_tokens"`
+		PromptTokens         int `json:"prompt_tokens"`
+		CompletionTokens     int `json:"completion_tokens"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err

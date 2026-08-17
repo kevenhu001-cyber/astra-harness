@@ -15,10 +15,10 @@ import (
 type loginState int
 
 const (
-	loginStatePending  loginState = iota // waiting for browser approval
-	loginStateSuccess                    // approved, displaying success
-	loginStateError                      // error from the auth server
-	loginStateExpired                    // device code expired (10min)
+	loginStatePending loginState = iota // waiting for browser approval
+	loginStateSuccess                   // approved, displaying success
+	loginStateError                     // error from the auth server
+	loginStateExpired                   // device code expired (10min)
 )
 
 // loginOverlay is the dedicated TUI panel shown while a device flow is

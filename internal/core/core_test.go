@@ -48,8 +48,8 @@ func TestReconcileState(t *testing.T) {
 			{ID: "c1", Status: ClaimVerified, CodeState: "A", EvidenceIDs: []string{"ev1"}},
 			{ID: "c2", Status: ClaimVerified, CodeState: "B", EvidenceIDs: []string{"ev2"}},
 			{ID: "c3", Status: ClaimSupported, CodeState: "A"},
-			{ID: "c4", Status: ClaimHypothesis, CodeState: "A"}, // not verified: untouched
-			{ID: "c5", Status: ClaimVerified, EvidenceIDs: []string{"ev2"}}, // no own state, fresh evidence
+			{ID: "c4", Status: ClaimHypothesis, CodeState: "A"},                             // not verified: untouched
+			{ID: "c5", Status: ClaimVerified, EvidenceIDs: []string{"ev2"}},                 // no own state, fresh evidence
 			{ID: "c6", Status: ClaimVerified, CodeState: "B", EvidenceIDs: []string{"ev1"}}, // refs stale evidence
 		},
 	}
