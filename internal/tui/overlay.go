@@ -591,35 +591,6 @@ func overlaySessions(e *engine.Engine) *overlay {
 	return o
 }
 
-func overlayProviderConfig(e *engine.Engine) *overlay {
-	var b strings.Builder
-	for _, p := range e.Config.Providers {
-		keyState := p.APIKeyEnv
-		if p.APIKey != "" {
-			keyState = "set (stored in .astra/config.json)"
-		}
-		if keyState == "" {
-			keyState = "unset"
-		}
-		url := p.BaseURL
-		if url == "" {
-			url = "—"
-		}
-		models := strings.Join(p.Models, ", ")
-		if models == "" {
-			models = "—"
-		}
-		b.WriteString(styleTitle.Render("["+p.ID+"]") + "\n")
-		b.WriteString(fmt.Sprintf("  type:    %s\n", p.Type))
-		b.WriteString(fmt.Sprintf("  url:     %s\n", url))
-		b.WriteString(fmt.Sprintf("  api key: %s\n", keyState))
-		b.WriteString(fmt.Sprintf("  models:  %s\n", models))
-		b.WriteString("\n")
-	}
-	b.WriteString(styleDim.Render("/set-url <provider> <url> · /set-key <provider> <key> · /set-model <provider> <model>"))
-	return &overlay{title: "Provider configuration", body: b.String(), footer: "esc close"}
-}
-
 var statusLineItems = map[string]string{
 	"model":                "Current model name",
 	"model-with-reasoning": "Model name with reasoning level",
@@ -723,6 +694,7 @@ func overlayModels(e *engine.Engine) *overlay {
 	recent := e.RecentModels()
 	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Recent", "Available", "Configured"}}
 	o.filterable = true
+	o.append("⚙  Configure providers…", "Open the interactive model settings form to edit base URL, API key, and model ID.")
 	for _, id := range recent {
 		parts := strings.SplitN(id, "|", 2)
 		desc := "recently used"
@@ -766,6 +738,9 @@ func overlayModels(e *engine.Engine) *overlay {
 	o.finishTab()
 	o.onSelect = func(sel string) string {
 		text := stripOrdinal(sel)
+		if strings.Contains(text, "⚙") {
+			return "⚙config"
+		}
 		text = strings.TrimSpace(strings.TrimPrefix(text, "★"))
 		if strings.HasPrefix(text, "○ ") || strings.HasPrefix(text, "● ") {
 			text = strings.TrimSpace(text[2:])

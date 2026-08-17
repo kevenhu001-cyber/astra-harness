@@ -308,9 +308,9 @@ func TestFormatDirectoryDisplay(t *testing.T) {
 		if got := formatDirectoryDisplay(home); got != "~" {
 			t.Fatalf("home dir should render as ~: %q", got)
 		}
-		if got := formatDirectoryDisplay(filepath.Join(home, "proj")); got != "~/proj" {
-			t.Fatalf("subdir should render as ~/proj: %q", got)
-		}
+	if got := formatDirectoryDisplay(filepath.Join(home, "proj")); got != "~"+string(os.PathSeparator)+"proj" {
+		t.Fatalf("subdir should render as ~/proj: %q", got)
+	}
 	}
 	if got := formatDirectoryDisplay("/tmp/not-in-home"); got != "/tmp/not-in-home" {
 		t.Fatalf("unrelated path should stay unchanged: %q", got)

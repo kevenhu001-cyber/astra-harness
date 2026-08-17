@@ -105,6 +105,7 @@ type app struct {
 	palette       palette
 	sidebar       sidebar
 	overlay       *overlay
+	settings      *modelSettings
 	spinner       *asciiAnim
 	ignition      *effortIgnition
 	headerHeight  int
@@ -375,6 +376,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.addSystem("palette → " + m.entry.title)
 		return a, a.executeCommand(m.entry.command)
 	case tea.MouseMsg:
+		// The model-settings form owns the mouse while it is open.
+		if a.settings != nil {
+			return a.handleSettings(msg)
+		}
 		// Wheel events scroll the chat viewport one row at a time and respect
 		// the existing at-bottom anchor. Non-wheel mouse events inside the
 		// sidebar footprint route into the sidebar's click handler.
@@ -420,6 +425,22 @@ func (a *app) layout() {
 	a.palette.SetSize(a.width, a.height)
 }
 
+// handleSettings routes a message into the open model-settings form and
+// closes it when the form reports done, showing its closing message.
+func (a *app) handleSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	done, closeMsg, cmd := a.settings.update(msg, a)
+	if done {
+		a.settings = nil
+		if closeMsg != "" {
+			a.addSystem(closeMsg)
+		}
+		a.refreshViewport()
+		return a, cmd
+	}
+	a.refreshViewport()
+	return a, cmd
+}
+
 // handleKey routes key events to the right handler.
 func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.quit {
@@ -443,6 +464,11 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.addSystem("keymap: " + action + " → " + s)
 		}
 		return a, nil
+	}
+
+	// Model-settings form is exclusive: it consumes every key while open.
+	if a.settings != nil {
+		return a.handleSettings(msg)
 	}
 
 	// Dynamic Codex-style bindings (configurable via /keymap).
@@ -979,8 +1005,8 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		} else {
 			a.overlay = overlayModels(a.engine)
 		}
-	case "/config":
-		a.overlay = overlayProviderConfig(a.engine)
+	case "/config", "/settings":
+		a.settings = newModelSettings(a)
 	case "/set-url":
 		id, val, err := providerArg(args)
 		if err != nil {
@@ -1332,6 +1358,10 @@ func (a *app) overlaySelect(selected string) {
 			a.resumeSession(selected)
 		}
 	case "Models — pick provider/model":
+		if selected == "⚙config" {
+			a.settings = newModelSettings(a)
+			return
+		}
 		parts := strings.SplitN(selected, "|", 2)
 		if len(parts) == 2 {
 			if err := a.engine.SwitchModel(parts[0], parts[1]); err != nil {
@@ -1592,6 +1622,8 @@ func (a *app) View() string {
 	header := a.renderHeader()
 	var main string
 	switch {
+	case a.settings != nil:
+		main = a.settings.View(a.width-sideW, a.viewportHeight())
 	case a.palette.visible:
 		main = a.palette.View()
 	case a.loginOverlay != nil:
@@ -1655,12 +1687,20 @@ func (a *app) renderHeader() string {
 	branch := a.engine.Git.BranchOr("")
 	acct := a.userEmail
 
-	// Codex's session header is a rounded card with one row per attribute.
-	// Build the body and box it in the same border style as other overlays.
+	// Session header: a pixel-art ASTRA wordmark on top, then one row per
+	// attribute inside a rounded card (Codex session-header style).
+	pal := activePalette()
+	inner := a.width - 4
+	if inner < 40 {
+		inner = 40
+	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(">_ Astra Harness") + styleDim.Render(" (v0.1.0)") + "\n")
+	for _, l := range astraLogoLines(lipgloss.NewStyle().Foreground(pal.Accent).Bold(true)) {
+		b.WriteString(lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Render(l))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("  model:        ") + styleBody.Render(model) + "  " + styleKey.Render("/model to change") + "\n")
+	b.WriteString(styleDim.Render("  model:        ") + styleBody.Render(model) + "  " + styleKey.Render("/model · ctrl+m to change") + "\n")
 	b.WriteString(styleDim.Render("  directory:    ") + styleBody.Render(formatDirectoryDisplay(a.engine.Root)) + "\n")
 	b.WriteString(styleDim.Render("  permissions:  ") + styleBody.Render(mode))
 	if branch != "" {
@@ -1670,7 +1710,6 @@ func (a *app) renderHeader() string {
 		b.WriteString(styleDim.Render("  acct:") + " " + styleSubtle.Render(acct))
 	}
 	b.WriteString("\n")
-	pal := activePalette()
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.GrayLo).

@@ -98,8 +98,7 @@ func TestRenderHeaderCodex(t *testing.T) {
 	_, _ = a.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	got := strip(a.renderHeader())
 	for _, want := range []string{
-		">_ Astra Harness",
-		"(v0.1.0)",
+		"██", // pixel-art ASTRA wordmark
 		"model:",
 		"directory:",
 		"permissions:",
@@ -107,6 +106,10 @@ func TestRenderHeaderCodex(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("header missing %q:\n%s", want, got)
 		}
+	}
+	// The wordmark spells out ASTRA (5 letters, each 8 columns wide).
+	if n := strings.Count(got, "██"); n < 40 {
+		t.Fatalf("header should contain the pixel logo (>=40 lit pixels), got %d:\n%s", n, got)
 	}
 	if strings.Contains(got, "◆") {
 		t.Fatalf("header should no longer use the ◆ brand glyph:\n%s", got)

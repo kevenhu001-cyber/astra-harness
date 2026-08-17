@@ -8,27 +8,29 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// chromaStyle picks a chroma style tuned for our terminal.
+// chromaStyle picks a chroma style tuned for our terminal. Colors follow the
+// default black/white/orange palette: gray comments, white text, orange for
+// keywords, functions, strings and numbers.
 func chromaStyle() *chroma.Style {
-	if s := chroma.MustNewStyle("astra-dark", chroma.StyleEntries{
-		chroma.Comment:            "#7f7f9f italic",
-		chroma.CommentPreproc:     "#7f7f9f italic",
-		chroma.Keyword:            "#ff79c6 bold",
-		chroma.KeywordConstant:    "#ff79c6",
-		chroma.KeywordDeclaration: "#ff79c6",
-		chroma.KeywordType:        "#bd93f9",
-		chroma.Name:               "#8be9fd",
-		chroma.NameClass:          "#8be9fd",
-		chroma.NameFunction:       "#ffb86c",
-		chroma.NameVariable:       "#f8f8f2",
-		chroma.NameBuiltin:        "#ffb86c",
-		chroma.LiteralString:      "#f1fa8c",
-		chroma.LiteralNumber:      "#ff9580",
-		chroma.Operator:           "#ff79c6",
-		chroma.Punctuation:        "#a0a0b5",
-		chroma.Error:              "#ff5555",
-		chroma.Text:               "#f8f8f2",
-		chroma.Background:         "bg:#15151f",
+	if s := chroma.MustNewStyle("astra", chroma.StyleEntries{
+		chroma.Comment:            "#7a7a7a italic",
+		chroma.CommentPreproc:     "#7a7a7a italic",
+		chroma.Keyword:            "#ff8c00 bold",
+		chroma.KeywordConstant:    "#ff8c00",
+		chroma.KeywordDeclaration: "#ff8c00",
+		chroma.KeywordType:        "#ffb266",
+		chroma.Name:               "#f2f2f2",
+		chroma.NameClass:          "#ffb266",
+		chroma.NameFunction:       "#ff8c00",
+		chroma.NameVariable:       "#f2f2f2",
+		chroma.NameBuiltin:        "#ff8c00",
+		chroma.LiteralString:      "#ffa940",
+		chroma.LiteralNumber:      "#ffa940",
+		chroma.Operator:           "#f2f2f2",
+		chroma.Punctuation:        "#9e9e9e",
+		chroma.Error:              "#ff5c33",
+		chroma.Text:               "#f2f2f2",
+		chroma.Background:         "bg:#000000",
 	}); s != nil {
 		return s
 	}
@@ -90,28 +92,28 @@ func colorizeToken(t chroma.Token) string {
 
 func colorForType(typ chroma.TokenType) string {
 	if typ.InCategory(chroma.Comment) {
-		return "60"
+		return "245"
 	}
 	if typ.InCategory(chroma.Keyword) {
-		return "141"
+		return "208"
 	}
 	if typ.InCategory(chroma.NameClass) || typ.InCategory(chroma.NameFunction) || typ == chroma.NameClass || typ == chroma.NameFunction {
-		return "215"
+		return "208"
 	}
 	if typ.InCategory(chroma.Name) || typ == chroma.Name {
-		return "111"
+		return "252"
 	}
 	if typ.InCategory(chroma.NameBuiltin) || typ == chroma.NameBuiltin || typ == chroma.NameBuiltinPseudo {
-		return "215"
+		return "208"
 	}
 	if typ.InCategory(chroma.LiteralString) || typ == chroma.LiteralString {
-		return "223"
+		return "214"
 	}
 	if typ.InCategory(chroma.LiteralNumber) || typ == chroma.LiteralNumber {
-		return "209"
+		return "208"
 	}
 	if typ.InCategory(chroma.Operator) || typ == chroma.Operator {
-		return "141"
+		return "252"
 	}
 	if typ.InCategory(chroma.Punctuation) || typ == chroma.Punctuation {
 		return "245"

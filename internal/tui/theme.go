@@ -10,14 +10,11 @@ import (
 // themePalette describes the active color set. All rendered styles are derived
 // from it. Switching themes rebuilds the styles in place.
 //
-// The palette follows the Codex style guide (codex-rs/tui/styles.md):
-//   - Headers: bold, primary text color
-//   - Secondary text: dim
-//   - User input tips, selection, status indicators: cyan
-//   - Success and additions: green
-//   - Errors, failures and deletions: red
-//   - Brand ("Codex" / "$" prompt): magenta
-//   - Avoid custom colors that clash with terminal themes
+// The default "astra" palette is black / white / orange: black surfaces,
+// white/gray text, and orange as the single accent for selection, tips,
+// links, keys, success and the brand. Semantic roles (green/red/cyan/magenta)
+// collapse into the orange family plus white, so the whole UI stays within
+// the black-white-orange scheme.
 type themePalette struct {
 	Name string
 
@@ -68,7 +65,26 @@ type themePalette struct {
 }
 
 var palettes = map[string]themePalette{
-	// Default theme: Catppuccin Mocha, matching the colors Codex uses for
+	// Default theme: black / white / orange. Black surfaces, white text,
+	// orange accents. Errors stay readable as a vermillion (orange family)
+	// so they remain visible without breaking the scheme.
+	"astra": {
+		Name: "astra",
+		Bg0:  "#000000", Bg1: "#0D0D0D", Bg2: "#171717", Bg3: "#242424",
+		Accent: "#FF8C00", AccentHi: "#FFB266", AccentLo: "#5C3A10",
+		Cyan: "#FF8C00", CyanHi: "#FFA940", Magenta: "#FFB266",
+		Green: "#FF8C00", Yellow: "#FFA940", Orange: "#FF8C00",
+		Red: "#FF5C33", RedHi: "#FF7A59",
+		Gray: "#6E6E6E", GrayLo: "#2E2E2E", GrayHi: "#9E9E9E",
+		White: "#F2F2F2", WhiteDim: "#A8A8A8",
+		UserBg: "#141414", CmdFg: "#FF8C00", TextFg: "#F2F2F2",
+		DiffAddBg: "#1F1206", DiffAddFg: "#FFA940",
+		DiffDelBg: "#262626", DiffDelFg: "#F2F2F2",
+		DiffCtxFg: "#6E6E6E", DiffHunkFg: "#FF8C00",
+		PillEvidence: "#1F1206", PillUnknown: "#241505",
+		PillClaim: "#1A1A1A", PillError: "#331505",
+	},
+	// Legacy theme: Catppuccin Mocha, matching the colors Codex uses for
 	// exec cells and tool calls (e.g. command names in #89B4FA, body text in
 	// #CDD6F4, from codex-rs/tui/src/exec_cell snapshots).
 	"codex": {
@@ -139,7 +155,7 @@ var palettes = map[string]themePalette{
 
 var (
 	themeMu sync.RWMutex
-	active  = palettes["codex"]
+	active  = palettes["astra"]
 )
 
 // ThemeNames returns the registered theme names (sorted).
@@ -289,12 +305,12 @@ var (
 // rebuildStylesLocked rebuilds all style globals from the active palette.
 // Caller must hold themeMu for writing.
 //
-// Conventions (Codex styles.md):
-//   - Headers: bold, primary color
-//   - Secondary text: dim
-//   - Tips / selection / status indicators: cyan
-//   - Success / additions: green; errors / deletions: red
-//   - Brand and "$" prompt: magenta
+// Conventions (default "astra" black/white/orange palette):
+//   - Headers: bold, white text
+//   - Secondary text: dim gray
+//   - Tips / selection / status indicators / keys: orange
+//   - Success / additions: orange; errors / deletions: vermillion red
+//   - Brand and "$" prompt: orange
 //   - No decorative boxes around messages: user text gets a subtle
 //     background tint, assistant text renders as plain markdown, and tool
 //     calls render as Codex exec cells with "•" bullets and "│"/"└" prefixes.

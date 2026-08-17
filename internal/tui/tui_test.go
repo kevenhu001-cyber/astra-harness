@@ -175,18 +175,95 @@ func TestPaletteFuzzy(t *testing.T) {
 }
 
 func TestThemeSwitch(t *testing.T) {
-	if CurrentTheme() != "codex" {
-		t.Fatalf("default theme should be codex, got %q", CurrentTheme())
+	if CurrentTheme() != "astra" {
+		t.Fatalf("default theme should be astra, got %q", CurrentTheme())
 	}
 	if SetTheme("nope") != "" {
 		t.Fatal("unknown theme name should be rejected")
 	}
-	defer SetTheme("codex")
+	defer SetTheme("astra")
 	if applied := SetTheme("astra-light"); applied != "astra-light" {
 		t.Fatalf("SetTheme = %q", applied)
 	}
 	if CurrentTheme() != "astra-light" {
 		t.Fatalf("theme did not switch, %q", CurrentTheme())
+	}
+}
+
+func TestModelSettingsForm(t *testing.T) {
+	a := newTestApp(t)
+	s := newModelSettings(a)
+	if s.zone != settingsZoneFields {
+		t.Fatalf("single provider should start in the fields zone, got %v", s.zone)
+	}
+	if got := s.fields[0].Value(); got != "https://example.invalid/v1" {
+		t.Fatalf("url field = %q", got)
+	}
+	if got := s.fields[2].Value(); got != "test-model" {
+		t.Fatalf("model field = %q", got)
+	}
+
+	// Editing + Save persists through the engine.
+	s.fields[0].SetValue("https://new.example/v1")
+	done, msg, _ := s.runButton("save", a)
+	if !done {
+		t.Fatalf("save should close the form, err=%q", s.err)
+	}
+	if !strings.Contains(msg, "test") {
+		t.Fatalf("save message = %q", msg)
+	}
+	if got := a.engine.Config.Providers[0].BaseURL; got != "https://new.example/v1" {
+		t.Fatalf("engine url = %q", got)
+	}
+
+	// Save & Use activates the model.
+	s3 := newModelSettings(a)
+	done, _, _ = s3.runButton("save-use", a)
+	if !done || s3.err != "" {
+		t.Fatalf("save-use should succeed, err=%q", s3.err)
+	}
+	if a.engine.Model != "test-model" {
+		t.Fatalf("engine model = %q", a.engine.Model)
+	}
+
+	// Add provider → cancel rolls the in-memory provider back out.
+	s2 := newModelSettings(a)
+	orig := len(s2.providers)
+	s2.addProvider()
+	if len(s2.providers) != orig+1 {
+		t.Fatalf("addProvider should append one provider, got %d", len(s2.providers))
+	}
+	if len(a.engine.Config.Providers) != orig+1 {
+		t.Fatalf("engine config should carry the in-memory provider")
+	}
+	done, _, _ = s2.cancel(a)
+	if !done {
+		t.Fatal("cancel should close")
+	}
+	if len(a.engine.Config.Providers) != orig {
+		t.Fatalf("cancel should roll back the added provider, got %d", len(a.engine.Config.Providers))
+	}
+}
+
+func TestModelSettingsKeys(t *testing.T) {
+	a := newTestApp(t)
+	s := newModelSettings(a)
+	// Tab walks URL → key → model → buttons, esc walks back.
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
+	if s.zone != settingsZoneFields || s.fieldSel != 1 {
+		t.Fatalf("tab should move to the key field, got zone=%v field=%d", s.zone, s.fieldSel)
+	}
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
+	if s.zone != settingsZoneFields || s.fieldSel != 2 {
+		t.Fatalf("tab should move to the model field, got zone=%v field=%d", s.zone, s.fieldSel)
+	}
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
+	if s.zone != settingsZoneButtons {
+		t.Fatalf("tab after the last field should move to buttons, got zone=%v", s.zone)
+	}
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyEsc}, a)
+	if s.zone != settingsZoneFields {
+		t.Fatalf("esc should return to the fields zone, got zone=%v", s.zone)
 	}
 }
 

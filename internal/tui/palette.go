@@ -53,6 +53,7 @@ func builtinPaletteEntries() []paletteEntry {
 
 		{id: "model", title: "switch model", desc: "change the active LLM", category: "Model", command: "/model"},
 		{id: "provider", title: "switch provider", desc: "change the active provider", category: "Model", command: "/provider"},
+		{id: "config", title: "model settings…", desc: "edit base URL / API key / model ID", category: "Model", command: "/config"},
 		{id: "cost", title: "cost & tokens", desc: "show usage and pricing", category: "Model", command: "/cost"},
 
 		{id: "perm", title: "permission mode…", desc: "ask | allow | deny", category: "Safety", command: "/permissions ask"},
