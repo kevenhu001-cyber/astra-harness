@@ -5,10 +5,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 )
 
 type slashCmd struct {
@@ -39,8 +42,8 @@ var slashCommands = []slashCmd{
 	{Name: "/undo", Desc: "rewind last assistant turn", Category: "Safety", Shortcut: "Ctrl+U"},
 	{Name: "/model", Desc: "switch model", Category: "Model"},
 	{Name: "/provider", Desc: "switch provider", Category: "Model"},
-	{Name: "/config", Desc: "interactive provider settings (URL / key / model)", Category: "Model", Shortcut: "Ctrl+M"},
-	{Name: "/settings", Desc: "interactive provider settings (alias of /config)", Category: "Model"},
+	{Name: "/config", Desc: "connect a provider (API key / model)", Category: "Model", Shortcut: "Ctrl+M"},
+	{Name: "/settings", Desc: "connect a provider (alias of /config)", Category: "Model"},
 	{Name: "/set-url", Desc: "set provider base URL", Category: "Model", Placeholder: "<provider> <url>"},
 	{Name: "/set-key", Desc: "set provider API key (saved locally)", Category: "Model", Placeholder: "<provider> <key>"},
 	{Name: "/set-model", Desc: "add and switch to a model ID", Category: "Model", Placeholder: "<provider> <model>"},
@@ -129,6 +132,10 @@ type composer struct {
 	images []string
 }
 
+// maxComposerHeight caps how tall the composer may grow while typing so it
+// never takes over the screen (Codex caps its composer the same way).
+const maxComposerHeight = 8
+
 func newComposer(width int) composer {
 	ta := textarea.New()
 	ta.Placeholder = "Ask Astra to do anything"
@@ -136,7 +143,7 @@ func newComposer(width int) composer {
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetWidth(width - 6)
-	ta.SetHeight(2)
+	ta.SetHeight(1)
 	ta.Focus()
 	return composer{
 		ta: ta, focused: true, width: width,
@@ -182,7 +189,10 @@ func (c *composer) ClearImages() {
 
 func (c *composer) Value() string { return c.ta.Value() }
 
-func (c *composer) SetValue(v string) { c.ta.SetValue(v) }
+func (c *composer) SetValue(v string) {
+	c.ta.SetValue(v)
+	c.ta.CursorEnd()
+}
 
 func (c *composer) Focus() {
 	c.focused = true
@@ -206,6 +216,7 @@ func (c *composer) EnterBash() {
 	c.bashMode = true
 	c.bashLine = ""
 	c.ta.SetValue("")
+	c.ta.Placeholder = "" // the "Ask Astra…" placeholder must not leak into shell mode
 	c.plain = true
 	c.ta.Prompt = "! "
 	c.promptGlyph = "!"
@@ -256,11 +267,13 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 		case "backspace":
 			if len(c.bashLine) > 0 {
 				c.bashLine = c.bashLine[:len(c.bashLine)-1]
+				c.mirrorBashLine()
 			}
 			return "", false, true
 		}
 		if key.Type == tea.KeyRunes {
 			c.bashLine += key.String()
+			c.mirrorBashLine()
 			return "", false, true
 		}
 		return "", false, false
@@ -412,6 +425,110 @@ func (c *composer) update(msg tea.Msg) (string, bool, bool) {
 	return "", false, false
 }
 
+// mirrorBashLine keeps the textarea value in sync with bashLine so the shell
+// command the user is typing is actually visible in the input box.
+func (c *composer) mirrorBashLine() {
+	c.ta.SetValue(c.bashLine)
+	c.ta.CursorEnd()
+}
+
+// ContentLines returns the number of lines the composer text occupies when
+// wrapped to the textarea width, capped at maxComposerHeight. The composer
+// sizes its box from this so it starts as a single line and grows as you
+// type (Codex-style) instead of always being two lines tall.
+func (c *composer) ContentLines() int {
+	n := wrappedLineCount(c.ta.Value(), c.ta.Width())
+	if n < 1 {
+		n = 1
+	}
+	if n > maxComposerHeight {
+		n = maxComposerHeight
+	}
+	return n
+}
+
+// BoxHeight returns the rendered height of the composer box (content lines
+// plus the top/bottom borders); the app uses it to size the chat viewport.
+func (c *composer) BoxHeight() int {
+	if c.search {
+		return 4 // status row + optional match preview + borders
+	}
+	return c.ContentLines() + 2
+}
+
+// wrappedLineCount mirrors the bubbles textarea's word-wrap algorithm
+// (textarea.wrap) and returns how many visual lines the value occupies at the
+// given wrap width. The composer box sizes itself from this count so it never
+// shows an extra empty line nor clips content. Note the final boundary uses
+// "strictly greater" rather than the textarea's ">=": the textarea appends a
+// phantom blank line when a line exactly fills the width (a navigation
+// quirk), which would otherwise show up as an extra empty row in the box.
+func wrappedLineCount(value string, width int) int {
+	if width < 1 {
+		width = 1
+	}
+	if value == "" {
+		return 1
+	}
+	// The textarea wraps each newline-separated logical line independently,
+	// so the total is the sum of the per-line wrapped counts.
+	total := 0
+	for _, line := range strings.Split(value, "\n") {
+		total += wrapOneLine(line, width)
+	}
+	return total
+}
+
+// wrapOneLine counts how many visual lines a single logical line (no
+// newlines) occupies at the given width, mirroring bubbles textarea.wrap.
+func wrapOneLine(line string, width int) int {
+	runes := []rune(line)
+	if len(runes) == 0 {
+		return 1
+	}
+	rowWidths := []int{0} // rendered width of each wrapped line so far
+	row := 0
+	var word []rune
+	spaces := 0
+	for _, r := range runes {
+		if unicode.IsSpace(r) {
+			spaces++
+		} else {
+			word = append(word, r)
+		}
+		if spaces > 0 {
+			if rowWidths[row]+uniseg.StringWidth(string(word))+spaces > width {
+				row++
+				rowWidths = append(rowWidths, 0)
+				rowWidths[row] += uniseg.StringWidth(string(word)) + spaces
+			} else {
+				rowWidths[row] += uniseg.StringWidth(string(word)) + spaces
+			}
+			spaces = 0
+			word = nil
+		} else {
+			lastCharLen := runewidth.RuneWidth(word[len(word)-1])
+			if uniseg.StringWidth(string(word))+lastCharLen > width {
+				if rowWidths[row] > 0 {
+					row++
+					rowWidths = append(rowWidths, 0)
+				}
+				rowWidths[row] += uniseg.StringWidth(string(word))
+				word = nil
+			}
+		}
+	}
+	if rowWidths[row]+uniseg.StringWidth(string(word))+spaces > width {
+		rowWidths = append(rowWidths, 0)
+		row++
+		spaces++
+		rowWidths[row] += uniseg.StringWidth(string(word)) + spaces
+	} else {
+		rowWidths[row] += uniseg.StringWidth(string(word)) + spaces + 1
+	}
+	return row + 1
+}
+
 // refresh updates the popup state from the current value.
 func (c *composer) refresh() {
 	value := c.ta.Value()
@@ -459,8 +576,15 @@ func (c *composer) refreshAt() {
 	q := strings.ToLower(c.atQuery)
 	c.atCandidates = c.atCandidates[:0]
 	for _, f := range c.fileCandidates {
-		if q == "" || strings.HasPrefix(strings.ToLower(f.Label), q) || fuzzyMatch(q, f.Label) {
+		label := strings.ToLower(f.Label)
+		// Cheap prefix/substring pre-filter before the expensive fuzzy match,
+		// plus a hard scan cap, so typing after "@" stays responsive even in
+		// very large repositories (fuzzyMatch only runs on likely candidates).
+		if q == "" || strings.HasPrefix(label, q) || strings.Contains(label, q) || fuzzyMatch(q, f.Label) {
 			c.atCandidates = append(c.atCandidates, f)
+			if len(c.atCandidates) >= 200 {
+				break
+			}
 		}
 	}
 	sort.Slice(c.atCandidates, func(i, j int) bool { return c.atCandidates[i].Label < c.atCandidates[j].Label })
@@ -548,6 +672,9 @@ func (c *composer) View(width int) string {
 	if c.search {
 		return c.viewSearch(width)
 	}
+	// Size the box to the wrapped content: one line while idle, growing as
+	// the user types (capped) instead of a constant two-line box.
+	c.ta.SetHeight(c.ContentLines())
 	inner := c.ta.View()
 	if len(c.images) == 0 && c.ta.Value() == "" && !c.bashMode {
 		// Codex shimmers the "Ask …" placeholder while the composer is idle.

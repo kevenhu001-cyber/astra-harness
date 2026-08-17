@@ -135,6 +135,15 @@ type app struct {
 	keymapCaptureAction string
 	atBottom            bool
 	toolWorkThisTurn    bool
+	// animRunning is true while the shared 50ms animation loop is scheduled.
+	// The loop only runs while something is actually animating (busy spinner,
+	// streaming cell, effort ignition, idle shimmer placeholder) so typing and
+	// idle states never pay for constant full-screen redraws.
+	animRunning bool
+	// lastComposerH is the composer box height at the last layout; when it
+	// changes (the composer grows/shrinks as you type) the viewport is
+	// re-laid-out so the footer is never pushed off-screen.
+	lastComposerH int
 	userEmail           string
 	deviceFlow          *auth.DeviceFlow
 	loginOverlay        *loginOverlay
@@ -164,6 +173,7 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 	a.composer = newComposer(80)
 	a.composer.historySearchKey = eng.KeymapBinding("history_search")
 	a.composer.newlineKey = eng.KeymapBinding("newline")
+	a.lastComposerH = a.composer.BoxHeight()
 	a.sidebar = *newSidebar(eng)
 	a.sidebar.visible = false
 	a.palette = palette{}
@@ -187,7 +197,12 @@ func RunWithOptions(root string, cfg *engine.Config, eng *engine.Engine, showRes
 			a.overlay = overlaySessions(eng)
 		}
 	}
-	p := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Bubble Tea enables the standard mouse mode (click + wheel) by default;
+	// cell-motion mode would flood the event loop with a message for every
+	// cell the pointer crosses, which on Windows terminals makes keystrokes
+	// queue behind mouse events and feel laggy. Nothing in the UI needs
+	// buttonless hover tracking, so no extra mouse option is passed.
+	p := tea.NewProgram(a, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -197,6 +212,7 @@ func RunWithOptions(root string, cfg *engine.Config, eng *engine.Engine, showRes
 func (a *app) Init() tea.Cmd {
 	cmds := []tea.Cmd{a.waitEvent, a.syncTitle()}
 	if motionEnabled() {
+		a.animRunning = true
 		cmds = append(cmds, animTickCmd())
 	}
 	return tea.Batch(cmds...)
@@ -213,9 +229,12 @@ func animTickCmd() tea.Cmd {
 }
 
 // animTick advances the animated surfaces and re-renders while anything is
-// moving. Reduced-motion terminals return no command, ending the loop.
+// moving. When nothing needs animating the loop stops (animRunning=false)
+// until the next Update starts it again via the Update wrapper. Reduced-motion
+// terminals return no command, ending the loop.
 func (a *app) animTick(now time.Time) tea.Cmd {
-	if !motionEnabled() {
+	if !motionEnabled() || !a.animNeeded() {
+		a.animRunning = false
 		return nil
 	}
 	if a.busy {
@@ -232,6 +251,19 @@ func (a *app) animTick(now time.Time) tea.Cmd {
 		a.refreshViewport()
 	}
 	return animTickCmd()
+}
+
+// animNeeded reports whether any animated surface requires the shared 50ms
+// animation loop to keep running. While the user is typing (composer has
+// text) and the agent is idle nothing animates, so the loop stops and input
+// stays smooth instead of paying for constant full-screen redraws.
+func (a *app) animNeeded() bool {
+	if a.busy || a.streaming != nil || a.ignition != nil {
+		return true
+	}
+	// The composer placeholder shimmers only while it is empty and not in
+	// bash / reverse-search mode.
+	return !a.composer.IsBash() && !a.composer.search && a.composer.Value() == ""
 }
 
 func (a *app) waitEvent() tea.Msg {
@@ -257,7 +289,19 @@ func (a *app) refreshFileCandidates() {
 	a.composer.SetFileCandidates(out)
 }
 
+// Update is the Bubble Tea entry point. It delegates to update and keeps the
+// shared animation loop alive exactly while something is animating, so idle
+// and typing states never run the 50ms tick.
 func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m, cmd := a.update(msg)
+	if cmd == nil && a.animNeeded() && !a.animRunning {
+		a.animRunning = true
+		cmd = animTickCmd()
+	}
+	return m, cmd
+}
+
+func (a *app) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = m.Width
@@ -309,6 +353,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.addSystem("external edit applied")
 		}
 		a.busy = false
+		a.syncComposerHeight()
 		a.refreshViewport()
 		return a, nil
 	case imagePastedMsg:
@@ -419,25 +464,44 @@ func (a *app) layout() {
 	a.vp.Width = a.width - sideW - 2
 	a.vp.Height = a.viewportHeight()
 	a.composer.SetWidth(a.width - sideW)
+	a.lastComposerH = a.composer.BoxHeight()
 	a.sidebar.SetSize(sideW, a.height-2)
 	a.sidebar.screenLeft = a.width - sideW
 	a.sidebar.screenTop = 0
 	a.palette.SetSize(a.width, a.height)
 }
 
+// syncComposerHeight re-lays-out when the composer's rendered height changes
+// so the chat viewport shrinks/grows with it instead of overlapping the
+// footer. Cheap when nothing changed.
+func (a *app) syncComposerHeight() {
+	if h := a.composer.BoxHeight(); h != a.lastComposerH {
+		a.layout()
+		a.refreshViewport()
+	}
+}
+
 // handleSettings routes a message into the open model-settings form and
-// closes it when the form reports done, showing its closing message.
+// closes it when the form reports done. The form renders itself in View(), so
+// ordinary keys don't need a viewport refresh — only the close path does
+// (it may append a system message or open the model picker).
 func (a *app) handleSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	done, closeMsg, cmd := a.settings.update(msg, a)
 	if done {
 		a.settings = nil
 		if closeMsg != "" {
-			a.addSystem(closeMsg)
+			if strings.HasPrefix(closeMsg, closeActionOpenModels) {
+				if rest := strings.TrimPrefix(closeMsg, closeActionOpenModels); rest != "" {
+					a.addSystem(strings.TrimPrefix(rest, "|"))
+				}
+				a.overlay = overlayModels(a.engine)
+			} else {
+				a.addSystem(closeMsg)
+			}
 		}
 		a.refreshViewport()
 		return a, cmd
 	}
-	a.refreshViewport()
 	return a, cmd
 }
 
@@ -664,10 +728,12 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.composer.plain = false
 			a.composer.SetValue("")
 			a.composer.Focus()
+			a.syncComposerHeight()
 			a.refreshViewport()
 			return a, nil
 		}
 		text, submit, _ := a.composer.update(msg)
+		a.syncComposerHeight()
 		if submit {
 			a.engine.AnswerAsk(a.pendingAsk.id, text)
 			a.mode = modeChat
@@ -823,12 +889,14 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// `!` enters bash mode (only when composer empty).
 	if s == "!" && a.composer.Value() == "" && !a.composer.IsBash() {
 		a.composer.EnterBash()
+		a.syncComposerHeight()
 		a.refreshViewport()
 		return a, nil
 	}
 
 	// Composer.
 	text, submit, _ := a.composer.update(msg)
+	a.syncComposerHeight()
 	if submit {
 		trimmed := strings.TrimSpace(text)
 		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "!") {
@@ -851,7 +919,10 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.startAgent(trimmed)
 	}
-	a.refreshViewport()
+	// Ordinary composer keystrokes don't change the viewport (the composer,
+	// slash popup, @ preview and plan nudge all render in View()), so there is
+	// nothing to refresh here — skipping the per-keystroke viewport re-wrap is
+	// what keeps typing smooth in long conversations.
 	return a, nil
 }
 
@@ -1388,6 +1459,7 @@ func (a *app) overlaySelect(selected string) {
 		a.streaming = nil
 		a.composer.SetValue(msg)
 		a.composer.Focus()
+		a.syncComposerHeight()
 		a.addSystem(fmt.Sprintf("backtrack: editing message #%d", n))
 	}
 }
@@ -1948,8 +2020,30 @@ func (a *app) renderAsk() string {
 }
 
 func (a *app) viewportHeight() int {
-	// Header (multi-line card), composer (~3 lines incl. band hint), status bar.
-	h := a.height - a.headerHeight - 5
+	// Total vertical budget: header card + optional band rows above the
+	// composer (status indicator / plan nudge / composer hint) + the composer
+	// area itself (which grows with content) + the footer status bar. All of
+	// these are computed exactly so the layout never overlaps or wastes rows.
+	band := 0
+	if a.renderStatusIndicator() != "" {
+		band++
+	}
+	if a.renderNudge() != "" {
+		band++
+	}
+	if a.renderComposerHint() != "" {
+		band++
+	}
+	var composerLines int
+	switch a.mode {
+	case modePermission:
+		composerLines = lipgloss.Height(a.renderPermission())
+	case modeAsk:
+		composerLines = lipgloss.Height(a.renderAsk())
+	default:
+		composerLines = a.composer.BoxHeight()
+	}
+	h := a.height - a.headerHeight - band - composerLines - 1
 	if h < 5 {
 		return 5
 	}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/kevenhu001-cyber/astra-harness/internal/engine"
@@ -301,6 +302,130 @@ func TestProviderSettingsKeys(t *testing.T) {
 	}
 }
 
+func TestProviderConnectFlowCustom(t *testing.T) {
+	a := newTestApp(t)
+	s := newProviderSettings(a)
+
+	press := func(k tea.KeyType) (bool, string) {
+		done, msg, _ := s.handleKey(tea.KeyMsg{Type: k}, a)
+		return done, msg
+	}
+	typeText := func(text string) {
+		_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)}, a)
+	}
+
+	cmd := s.startCustom(a)
+	if cmd == nil {
+		t.Fatal("custom flow should focus the provider id input")
+	}
+	if s.view != pvPrompt || s.pr.kind != promptProviderID {
+		t.Fatalf("custom flow should start at the provider id prompt, view=%v kind=%v", s.view, s.pr.kind)
+	}
+
+	// Invalid id → rejected with the opencode error message, flow stays put.
+	typeText("Bad ID!")
+	_, _ = press(tea.KeyEnter)
+	if s.err == "" || !strings.Contains(s.err, "lowercase") {
+		t.Fatalf("invalid provider id should error, err=%q", s.err)
+	}
+	if s.pr.kind != promptProviderID {
+		t.Fatalf("should stay on the provider id prompt, kind=%v", s.pr.kind)
+	}
+
+	// Valid id → api key prompt; empty key rejected.
+	s.pr.ti.SetValue("acme")
+	_, _ = press(tea.KeyEnter)
+	if s.pr.kind != promptAPIKey {
+		t.Fatalf("should advance to the api key prompt, kind=%v", s.pr.kind)
+	}
+	_, _ = press(tea.KeyEnter)
+	if s.err == "" || !strings.Contains(s.err, "API key is required") {
+		t.Fatalf("empty api key should error, err=%q", s.err)
+	}
+	s.pr.ti.SetValue("sk-123")
+	_, _ = press(tea.KeyEnter)
+	if s.pr.kind != promptBaseURL {
+		t.Fatalf("should advance to the base url prompt, kind=%v", s.pr.kind)
+	}
+	// Empty base url → the openai-compatible default.
+	_, _ = press(tea.KeyEnter)
+	if s.pr.kind != promptModel {
+		t.Fatalf("should advance to the model prompt, kind=%v", s.pr.kind)
+	}
+	s.pr.ti.SetValue("acme-1")
+	done, msg, _ := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter}, a)
+	if !done {
+		t.Fatalf("final model prompt should finish the flow, err=%q", s.err)
+	}
+	if !strings.Contains(msg, "acme") || !strings.Contains(msg, "acme-1") {
+		t.Fatalf("finish message = %q", msg)
+	}
+	if len(a.engine.Config.Providers) != 2 {
+		t.Fatalf("should have 2 providers, got %d", len(a.engine.Config.Providers))
+	}
+	p := a.engine.Config.Providers[1]
+	if p.ID != "acme" || p.BaseURL != "https://api.openai.com/v1" || p.APIKey != "sk-123" {
+		t.Fatalf("custom provider = %+v", p)
+	}
+	if a.engine.ProviderID() != "acme" || a.engine.Model != "acme-1" {
+		t.Fatalf("engine should use acme/acme-1, got %s/%s", a.engine.ProviderID(), a.engine.Model)
+	}
+}
+
+func TestProviderConnectFlowKnown(t *testing.T) {
+	a := newTestApp(t)
+	s := newProviderSettings(a)
+
+	cmd := s.startConnect(a, a.engine.Config.Providers[0])
+	if cmd == nil || s.pr.kind != promptAPIKey {
+		t.Fatalf("known provider should open the api key prompt, view=%v kind=%v", s.view, s.pr.kind)
+	}
+	s.pr.ti.SetValue("sk-live")
+	done, msg, _ := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter}, a)
+	if !done {
+		t.Fatalf("api key save should finish, err=%q", s.err)
+	}
+	if !strings.HasPrefix(msg, closeActionOpenModels) {
+		t.Fatalf("should ask to open the model picker, msg=%q", msg)
+	}
+	if got := a.engine.Config.Providers[0].APIKey; got != "sk-live" {
+		t.Fatalf("api key = %q", got)
+	}
+}
+
+func TestProviderModelEditShowsTypedID(t *testing.T) {
+	a := newTestApp(t)
+	s := newProviderSettings(a)
+	s.openEditor(a, a.engine.Config.Providers[0], false)
+	// Tab from Name → Base URL → API key → Models zone.
+	for i := 0; i < 3; i++ {
+		_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
+	}
+	if s.ed.zone != zoneModels {
+		t.Fatalf("should be in the models zone, zone=%v", s.ed.zone)
+	}
+	// 'e' starts editing the selected model row with the input focused.
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}, a)
+	if !s.ed.editing || !s.ed.modelEdit.Focused() {
+		t.Fatalf("model edit should be active and focused")
+	}
+	// Typing must land in the modelEdit input (the old bug: it was never
+	// focused, so the typed id never appeared on screen).
+	s.ed.modelEdit.SetValue("")
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("gpt-4o-2024")}, a)
+	if got := s.ed.modelEdit.Value(); got != "gpt-4o-2024" {
+		t.Fatalf("typed model id = %q, want gpt-4o-2024", got)
+	}
+	// Enter commits it to the model row.
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyEnter}, a)
+	if s.ed.editing {
+		t.Fatal("editing should stop after enter")
+	}
+	if s.ed.models[s.ed.modelSel] != "gpt-4o-2024" {
+		t.Fatalf("committed model = %q", s.ed.models[s.ed.modelSel])
+	}
+}
+
 func TestProviderSettingsView(t *testing.T) {
 	a := newTestApp(t)
 	s := newProviderSettings(a)
@@ -318,6 +443,98 @@ func TestProviderSettingsView(t *testing.T) {
 	s.ed.fields[0].ti.SetValue("acme")
 	if out := s.View(120, 36); out == "" {
 		t.Fatal("custom form view rendered empty")
+	}
+}
+
+// TestWrappedLineCountMatchesTextarea verifies the composer's wrap-line count
+// exactly matches the number of content lines the bubbles textarea actually
+// renders (padding lines carry the end-of-buffer marker), so the composer box
+// never shows an extra empty line nor hides content.
+func TestWrappedLineCountMatchesTextarea(t *testing.T) {
+	ta := textarea.New()
+	ta.Prompt = "› "
+	ta.ShowLineNumbers = false
+	ta.EndOfBufferCharacter = '~' // makes padding lines distinguishable
+	ta.SetWidth(42)               // internal wrap width becomes 42 - prompt(2) = 40
+	w := ta.Width()
+	cases := []string{
+		"hello",
+		strings.Repeat("x", 39),
+		strings.Repeat("x", 40),
+		strings.Repeat("x", 41),
+		strings.Repeat("x", 83),
+		"the quick brown fox jumps over the lazy dog and keeps running",
+		"first line\nsecond line\nthird",
+		"   padded line with a trailing long word that wraps over",
+		"mixed 界界界界 width 中文内容 here",
+	}
+	for _, v := range cases {
+		ta.SetValue(v)
+		got := wrappedLineCount(v, w)
+		ta.SetHeight(60) // tall enough that no content line scrolls out of view
+		content := 0
+		for _, ln := range strings.Split(stripANSI(ta.View()), "\n") {
+			body := strings.TrimSpace(strings.TrimPrefix(ln, "› "))
+			if body != "" && !strings.Contains(body, "~") {
+				content++
+			}
+		}
+		if got != content {
+			t.Fatalf("value %q: wrappedLineCount=%d but textarea renders %d content lines", v, got, content)
+		}
+	}
+}
+
+func TestComposerSingleLineAndGrows(t *testing.T) {
+	c := newComposer(80)
+	if c.ta.Height() != 1 {
+		t.Fatalf("composer should start at one line, height=%d", c.ta.Height())
+	}
+	if got := c.BoxHeight(); got != 3 {
+		t.Fatalf("empty composer box height = %d, want 3 (1 content + borders)", got)
+	}
+	// A short single line keeps the box at one content line.
+	c.SetValue("hello")
+	if got := c.ContentLines(); got != 1 {
+		t.Fatalf("short value content lines = %d, want 1", got)
+	}
+	// A long line that wraps grows the box, but never past the cap.
+	c.SetValue(strings.Repeat("word ", 60))
+	grew := c.ContentLines()
+	if grew <= 1 {
+		t.Fatalf("long value should wrap to more than one line, got %d", grew)
+	}
+	if grew > maxComposerHeight {
+		t.Fatalf("composer height should be capped at %d, got %d", maxComposerHeight, grew)
+	}
+	if c.BoxHeight() != grew+2 {
+		t.Fatalf("box height = %d, want %d", c.BoxHeight(), grew+2)
+	}
+	// Clearing returns to a single line.
+	c.SetValue("")
+	if got := c.ContentLines(); got != 1 {
+		t.Fatalf("cleared value content lines = %d, want 1", got)
+	}
+}
+
+func TestComposerBashLineVisible(t *testing.T) {
+	c := newComposer(80)
+	c.EnterBash()
+	if c.ta.Placeholder != "" {
+		t.Fatal("bash mode should clear the textarea placeholder")
+	}
+	// Type a command: it must appear in the textarea so the user can see it.
+	_, _, _ = c.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ls -la")})
+	if got := c.ta.Value(); got != "ls -la" {
+		t.Fatalf("bash line should be visible in the input, got %q", got)
+	}
+	// Backspace removes one character and stays in sync.
+	_, _, _ = c.update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := c.ta.Value(); got != "ls -l" {
+		t.Fatalf("backspace should update the visible bash line, got %q", got)
+	}
+	if got := c.bashLine; got != "ls -l" {
+		t.Fatalf("bashLine = %q", got)
 	}
 }
 

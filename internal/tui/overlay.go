@@ -694,7 +694,7 @@ func overlayModels(e *engine.Engine) *overlay {
 	recent := e.RecentModels()
 	o := &overlay{title: "Models — pick provider/model", tabs: []string{"Recent", "Available", "Configured"}}
 	o.filterable = true
-	o.append("⚙  Configure providers…", "Open the interactive model settings form to edit base URL, API key, and model ID.")
+	o.append("⚙  Connect a provider…", "Open the interactive provider settings to add an API key, connect a custom provider, or pick a model.")
 	for _, id := range recent {
 		parts := strings.SplitN(id, "|", 2)
 		desc := "recently used"
