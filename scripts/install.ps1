@@ -3,11 +3,12 @@
 #
 #   irm https://astracode.topodrive.top/install/install.ps1 | iex
 #
+# Release assets and checksums are published by the tag workflow.
 # Override the download base or target directory with:
 #   $env:ASTRA_BASE_URL = "https://..."; $env:ASTRA_INSTALL_DIR = "D:\astra"
 $ErrorActionPreference = "Stop"
 
-$BaseUrl = if ($env:ASTRA_BASE_URL) { $env:ASTRA_BASE_URL } else { "https://astracode.topodrive.top/install" }
+$BaseUrl = if ($env:ASTRA_BASE_URL) { $env:ASTRA_BASE_URL } else { "https://github.com/kevenhu001-cyber/astra-harness/releases/latest/download" }
 $InstallDir = if ($env:ASTRA_INSTALL_DIR) { $env:ASTRA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\astra" }
 
 $arch = $env:PROCESSOR_ARCHITECTURE

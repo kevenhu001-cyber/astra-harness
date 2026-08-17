@@ -162,7 +162,7 @@ func ToolDefs() []llm.ToolDef {
 			},
 		},
 		{
-			Name: "apply_patch", Description: "Apply a Codex-style patch to one or more files. Format: *** Begin Patch / *** Update File: <path> / @@ context / -old line / +new line / *** Add File: <path> (lines prefixed with +) / *** Delete File: <path> / *** Move to: <newpath> / *** End of File / *** End Patch. Use -/+ lines with enough surrounding context for a unique match; multiple files in one patch.",
+			Name: "apply_patch", Description: "Apply an Astra patch to one or more files. Format: *** Begin Patch / *** Update File: <path> / @@ context / -old line / +new line / *** Add File: <path> (lines prefixed with +) / *** Delete File: <path> / *** Move to: <newpath> / *** End of File / *** End Patch. Use -/+ lines with enough surrounding context for a unique match; multiple files in one patch.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -270,7 +270,7 @@ func (e *Engine) toolApplyPatch(args map[string]any) ToolResult {
 		if h.kind == "delete" {
 			kind = PermDelete
 		}
-		if allowed, err := e.Perm.Check(kind, h.path, "apply_patch", ""); err != nil || !allowed {
+		if allowed, err := e.Perm.CheckWithPreview(kind, h.path, "apply_patch", "", patch); err != nil || !allowed {
 			if err != nil {
 				return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
 			}
@@ -416,12 +416,6 @@ func (e *Engine) toolEdit(args map[string]any) ToolResult {
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
-	if allowed, err := e.Perm.Check(PermWrite, relPath(e.Root, path), "edit_file", ""); err != nil || !allowed {
-		if err != nil {
-			return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
-		}
-		return ToolResult{Success: false, Output: "permission denied by operator"}
-	}
 	old := argString(args, "old_string", "")
 	newStr := argString(args, "new_string", "")
 	if old == "" {
@@ -451,11 +445,17 @@ func (e *Engine) toolEdit(args map[string]any) ToolResult {
 	if strings.Contains(string(before), "\r\n") {
 		out = strings.ReplaceAll(out, "\n", "\r\n")
 	}
+	diff := simpleDiff(string(before), out, relPath(e.Root, path))
+	if allowed, err := e.Perm.CheckWithPreview(PermWrite, relPath(e.Root, path), "edit_file", "", diff); err != nil || !allowed {
+		if err != nil {
+			return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
+		}
+		return ToolResult{Success: false, Output: "permission denied by operator"}
+	}
 	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
 	e.Index.Touch(path)
-	diff := simpleDiff(string(before), out, relPath(e.Root, path))
 	e.recordFileChange(relPath(e.Root, path), diff)
 	return ToolResult{Success: true, Output: "Edited " + relPath(e.Root, path) + "\n\n" + diff}
 }
@@ -465,25 +465,25 @@ func (e *Engine) toolWrite(args map[string]any) ToolResult {
 	if err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
-	if allowed, err := e.Perm.Check(PermWrite, relPath(e.Root, path), "write_file", ""); err != nil || !allowed {
+	content := argString(args, "content", "")
+	var before []byte
+	if b, err := os.ReadFile(path); err == nil {
+		before = b
+	}
+	diff := simpleDiff(string(before), content, relPath(e.Root, path))
+	if allowed, err := e.Perm.CheckWithPreview(PermWrite, relPath(e.Root, path), "write_file", "", diff); err != nil || !allowed {
 		if err != nil {
 			return ToolResult{Success: false, Output: "permission denied: " + err.Error()}
 		}
 		return ToolResult{Success: false, Output: "permission denied by operator"}
 	}
-	content := argString(args, "content", "")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
-	}
-	var before []byte
-	if b, err := os.ReadFile(path); err == nil {
-		before = b
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return ToolResult{Success: false, Output: err.Error()}
 	}
 	e.Index.Touch(path)
-	diff := simpleDiff(string(before), content, relPath(e.Root, path))
 	e.recordFileChange(relPath(e.Root, path), diff)
 	return ToolResult{Success: true, Output: "Wrote " + relPath(e.Root, path) + "\n\n" + diff}
 }

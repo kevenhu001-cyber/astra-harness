@@ -21,11 +21,12 @@ import (
 )
 
 const (
-	modeChat       = "chat"
-	modePermission = "permission"
-	modeAsk        = "ask"
-	modeBash       = "bash"
-	modeBashResult = "bashresult"
+	modeChat         = "chat"
+	modePermission   = "permission"
+	modeAsk          = "ask"
+	modePlanApproval = "planapproval"
+	modeBash         = "bash"
+	modeBashResult   = "bashresult"
 )
 
 type chatItem struct {
@@ -114,7 +115,10 @@ type app struct {
 	busy                bool
 	busyAt              time.Time
 	pendingPerm         *engine.PermissionRequest
+	permissionSelection int
 	pendingAsk          *askState
+	planApproval        *planApprovalState
+	planSelection       int
 	bashOut             string
 	bashErr             error
 	status              string
@@ -154,6 +158,10 @@ type app struct {
 type askState struct {
 	id       string
 	question string
+}
+
+type planApprovalState struct {
+	markdown string
 }
 
 // NewApp builds the TUI model.
@@ -464,16 +472,28 @@ func (a *app) layout() {
 	if a.sidebar.visible {
 		sideW = 26
 	}
+	mainWidth := a.mainWidth()
 	header := a.renderHeader()
 	a.headerHeight = lipgloss.Height(header)
-	a.vp.Width = a.width - sideW - 2
+	a.vp.Width = max(1, mainWidth-2)
 	a.vp.Height = a.viewportHeight()
-	a.composer.SetWidth(a.width - sideW)
+	a.composer.SetWidth(mainWidth)
 	a.lastComposerH = a.composer.BoxHeight()
 	a.sidebar.SetSize(sideW, a.height-2)
 	a.sidebar.screenLeft = a.width - sideW
 	a.sidebar.screenTop = 0
-	a.palette.SetSize(a.width, a.height)
+	a.palette.SetSize(mainWidth, a.height)
+}
+
+// mainWidth is the physical width of the chat pane. Unlike widthAvail, it
+// never invents extra columns: every component in the main pane must fit this
+// width when the sidebar is visible.
+func (a *app) mainWidth() int {
+	w := a.width
+	if a.sidebar.visible {
+		w -= 26
+	}
+	return max(1, w)
 }
 
 // syncComposerHeight re-lays-out when the composer's rendered height changes
@@ -677,48 +697,76 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeChat
 			return a, nil
 		}
+		optionCount := a.permissionOptionCount()
+		finish := func(decision engine.PermissionDecision, reply bool) (tea.Model, tea.Cmd) {
+			a.engine.AnswerPermission(a.pendingPerm.ID, decision)
+			a.pendingPerm = nil
+			a.permissionSelection = 0
+			a.mode = modeChat
+			if reply {
+				// Codex's Cancel action returns focus to the composer so the
+				// user can explain what should be done differently.
+				a.composer.SetValue("Please do not run that yet — ")
+				a.composer.Focus()
+			}
+			a.refreshViewport()
+			return a, a.syncTitle()
+		}
 		allowKey := a.engine.KeymapBinding("permission_allow")
 		alwaysKey := a.engine.KeymapBinding("permission_always")
 		denyKey := a.engine.KeymapBinding("permission_deny")
 		neverKey := a.engine.KeymapBinding("permission_never")
 		switch {
-		case s == allowKey || s == "1":
-			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true})
-			a.mode = modeChat
-			a.pendingPerm = nil
-			a.refreshViewport()
-			return a, a.syncTitle()
-		case s == alwaysKey || s == "2":
-			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true, Always: true})
-			a.mode = modeChat
-			a.pendingPerm = nil
-			a.refreshViewport()
-			return a, a.syncTitle()
-		case s == denyKey || s == "3":
-			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false})
-			a.mode = modeChat
-			a.pendingPerm = nil
-			a.refreshViewport()
-			return a, a.syncTitle()
-		case s == neverKey || s == "4":
-			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false, Always: true})
-			a.mode = modeChat
-			a.pendingPerm = nil
-			a.refreshViewport()
-			return a, a.syncTitle()
+		case s == "up" || s == "k":
+			if a.permissionSelection == 0 {
+				a.permissionSelection = optionCount - 1
+			} else {
+				a.permissionSelection--
+			}
+			return a, nil
+		case s == "down" || s == "j" || s == "tab":
+			a.permissionSelection = (a.permissionSelection + 1) % optionCount
+			return a, nil
+		case s == "1":
+			a.permissionSelection = 0
+			return a, nil
+		case s == "2":
+			a.permissionSelection = 1
+			return a, nil
+		case s == "3":
+			a.permissionSelection = 2
+			return a, nil
+		case s == "4" && optionCount > 3:
+			a.permissionSelection = 3
+			return a, nil
+		case s == allowKey:
+			return finish(engine.PermissionDecision{Allowed: true}, false)
+		case s == alwaysKey:
+			return finish(engine.PermissionDecision{Allowed: true, Always: true}, false)
+		case s == denyKey:
+			return finish(engine.PermissionDecision{Allowed: false}, false)
+		case s == neverKey:
+			return finish(engine.PermissionDecision{Allowed: false, Always: true}, false)
 		case s == "esc":
-			// "Tell me what to do differently": deny and drop the user back
-			// to the composer with a hint pre-filled, matching Codex's
-			// approval_overlay.rs Cancel handler.
-			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false})
-			a.pendingPerm = nil
-			a.mode = modeChat
-			a.composer.SetValue("I can't run that command because — ")
-			a.composer.Focus()
-			a.refreshViewport()
-			return a, a.syncTitle()
+			return finish(engine.PermissionDecision{Allowed: false}, true)
+		case s == "enter":
+			// handled below using the currently highlighted option
+		default:
+			return a, nil
 		}
-		return a, nil
+		if s != "enter" {
+			return a, nil
+		}
+		switch a.permissionSelection {
+		case 0:
+			return finish(engine.PermissionDecision{Allowed: true}, false)
+		case 1:
+			return finish(engine.PermissionDecision{Allowed: true, Always: true}, false)
+		case 2:
+			return finish(engine.PermissionDecision{Allowed: false}, false)
+		default:
+			return finish(engine.PermissionDecision{Allowed: false}, true)
+		}
 
 	case modeAsk:
 		if a.pendingAsk == nil {
@@ -731,6 +779,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeChat
 			a.pendingAsk = nil
 			a.composer.plain = false
+			a.composer.ta.Placeholder = "Ask Astra to do anything"
 			a.composer.SetValue("")
 			a.composer.Focus()
 			a.syncComposerHeight()
@@ -744,12 +793,63 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeChat
 			a.pendingAsk = nil
 			a.composer.plain = false
+			a.composer.ta.Placeholder = "Ask Astra to do anything"
 			a.composer.SetValue("")
 			a.composer.Focus()
 			a.refreshViewport()
 			return a, nil
 		}
 		return a, nil
+
+	case modePlanApproval:
+		if a.planApproval == nil {
+			a.mode = modeChat
+			return a, nil
+		}
+		finish := func(implement, clearContext bool) (tea.Model, tea.Cmd) {
+			plan := a.planApproval.markdown
+			a.planApproval = nil
+			a.planSelection = 0
+			a.mode = modeChat
+			a.engine.Perm.SetPlanMode(false)
+			a.composer.SetPlanMode(false)
+			if !implement {
+				a.refreshViewport()
+				return a, a.syncTitle()
+			}
+			if clearContext {
+				a.items = nil
+				plan = "A previous agent produced the plan below. Implement it in a fresh context, re-read files as needed, and verify the result.\n\n" + plan
+			}
+			return a, a.startAgent("Implement the plan.\n\n" + plan)
+		}
+		switch s {
+		case "up", "k":
+			if a.planSelection == 0 {
+				a.planSelection = 2
+			} else {
+				a.planSelection--
+			}
+			return a, nil
+		case "down", "j", "tab":
+			a.planSelection = (a.planSelection + 1) % 3
+			return a, nil
+		case "1":
+			a.planSelection = 0
+			return a, nil
+		case "2":
+			a.planSelection = 1
+			return a, nil
+		case "3":
+			a.planSelection = 2
+			return a, nil
+		case "esc":
+			return finish(false, false)
+		case "enter":
+		default:
+			return a, nil
+		}
+		return finish(a.planSelection < 2, a.planSelection == 1)
 	}
 
 	// Sidebar input mode: arrows + enter on the sidebar.
@@ -1578,6 +1678,12 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 					rendered: codexSeparator(label, a.widthAvail()-2),
 				})
 			}
+			if a.engine.Perm.IsPlanMode() && strings.TrimSpace(content) != "" {
+				a.planApproval = &planApprovalState{markdown: content}
+				a.planSelection = 0
+				a.mode = modePlanApproval
+				a.composer.Blur()
+			}
 		}
 		a.turns++
 		a.status = "ready"
@@ -1634,6 +1740,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 	case engine.EvPermission:
 		if req, ok := ev.Data.(engine.PermissionRequest); ok {
 			a.pendingPerm = &req
+			a.permissionSelection = 0
 			a.mode = modePermission
 			a.composer.Blur()
 			a.composer.SetPlanMode(a.engine.Perm.IsPlanMode())
@@ -1646,6 +1753,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			a.pendingAsk = &askState{id: id, question: q}
 			a.mode = modeAsk
 			a.composer.plain = true
+			a.composer.ta.Placeholder = "Type your answer"
 			a.composer.SetValue("")
 			a.composer.Focus()
 			a.composer.SetPlanMode(a.engine.Perm.IsPlanMode())
@@ -1723,21 +1831,18 @@ func (a *app) View() string {
 	if a.width <= 0 || a.height <= 0 {
 		return ""
 	}
-	sideW := 0
-	if a.sidebar.visible {
-		sideW = 26
-	}
+	mainWidth := a.mainWidth()
 	header := a.renderHeader()
 	var main string
 	switch {
 	case a.settings != nil:
-		main = a.settings.View(a.width-sideW, a.viewportHeight())
+		main = a.settings.View(mainWidth, a.viewportHeight())
 	case a.palette.visible:
 		main = a.palette.View()
 	case a.loginOverlay != nil:
-		main = renderLoginOverlay(a.loginOverlay, a.width-sideW, a.viewportHeight())
+		main = renderLoginOverlay(a.loginOverlay, mainWidth, a.viewportHeight())
 	case a.overlay != nil:
-		main = a.overlay.View(a.width-sideW, a.viewportHeight())
+		main = a.overlay.View(mainWidth, a.viewportHeight())
 	default:
 		main = a.vp.View()
 	}
@@ -1749,11 +1854,13 @@ func (a *app) View() string {
 		composerView = a.renderPermission()
 	case modeAsk:
 		composerView = a.renderAsk()
+	case modePlanApproval:
+		composerView = a.renderPlanApproval()
 	default:
 		if a.ignition != nil {
-			composerView = a.ignition.view(a.width-sideW, time.Now())
+			composerView = a.ignition.view(mainWidth, time.Now())
 		} else {
-			composerView = a.composer.View(a.width - sideW)
+			composerView = a.composer.View(mainWidth)
 		}
 	}
 	var band strings.Builder
@@ -1795,34 +1902,29 @@ func (a *app) renderHeader() string {
 	branch := a.engine.Git.BranchOr("")
 	acct := a.userEmail
 
-	// Session header: a pixel-art ASTRA wordmark on top, then one row per
-	// attribute inside a rounded card (Codex session-header style).
+	// Codex keeps the session header compact: one brand line followed by
+	// aligned metadata rows. Keeping the header in the same physical pane as
+	// the chat is important when the optional sidebar is open.
 	pal := activePalette()
-	inner := a.width - 4
-	if inner < 40 {
-		inner = 40
-	}
+	paneWidth := a.mainWidth()
+	inner := max(1, paneWidth-4)
 	var b strings.Builder
-	for _, l := range astraLogoLines(lipgloss.NewStyle().Foreground(pal.Accent).Bold(true)) {
-		b.WriteString(lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Render(l))
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(styleDim.Render("  model:        ") + styleBody.Render(model) + "  " + styleKey.Render("/model · ctrl+m to change") + "\n")
+	b.WriteString(styleTitle.Render(">_ Astra Harness") + styleDim.Render(" (v0.1.0)"))
+	b.WriteString("\n\n")
+	b.WriteString(styleDim.Render("  model:        ") + styleBody.Render(model) + "\n")
 	b.WriteString(styleDim.Render("  directory:    ") + styleBody.Render(formatDirectoryDisplay(a.engine.Root)) + "\n")
-	b.WriteString(styleDim.Render("  permissions:  ") + styleBody.Render(mode))
+	b.WriteString(styleDim.Render("  permissions:  ") + styleBody.Render(mode) + "\n")
 	if branch != "" {
-		b.WriteString(styleDim.Render("  branch:") + " " + styleSubtle.Render(branch))
+		b.WriteString(styleDim.Render("  branch:       ") + styleSubtle.Render(branch) + "\n")
 	}
 	if acct != "" {
-		b.WriteString(styleDim.Render("  acct:") + " " + styleSubtle.Render(acct))
+		b.WriteString(styleDim.Render("  acct:         ") + styleSubtle.Render(acct) + "\n")
 	}
-	b.WriteString("\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.GrayLo).
 		Padding(0, 1).
-		Width(a.width - 2).
+		Width(inner).
 		Render(strings.TrimRight(b.String(), "\n"))
 }
 
@@ -1851,17 +1953,11 @@ func formatDirectoryDisplay(root string) string {
 	return root
 }
 
-// widthAvail returns the available horizontal space in the main pane,
-// subtracting the visible sidebar width when the sidebar is open.
+// widthAvail returns the physical width available to content in the main
+// pane. It intentionally does not impose a minimum: a narrow terminal must
+// wrap or clip content rather than render beyond the sidebar or screen edge.
 func (a *app) widthAvail() int {
-	w := a.width
-	if a.sidebar.visible {
-		w -= 26
-	}
-	if w < 40 {
-		return 40
-	}
-	return w
+	return a.mainWidth()
 }
 
 func (a *app) renderStatusBar() string {
@@ -1879,23 +1975,24 @@ func (a *app) renderStatusBar() string {
 		left += " · shift + tab to cycle"
 	}
 	segments := a.statusLineSegments()
-	widthAvail := a.widthAvail() - 2
+	barWidth := a.mainWidth()
+	contentWidth := max(1, barWidth-2)
 	// Codex collapses the statusline from the right: trailing segments drop
 	// off first, then the left message truncates as a last resort.
 	for len(segments) > 0 {
 		right := strings.Join(segments, " · ")
-		if lipgloss.Width(left)+lipgloss.Width(right)+1 <= widthAvail {
-			pad := widthAvail - lipgloss.Width(left) - lipgloss.Width(right) - 1
-			return styleStatusBar.Width(a.widthAvail()).Render(left + strings.Repeat(" ", pad) + right)
+		if lipgloss.Width(left)+lipgloss.Width(right)+1 <= contentWidth {
+			pad := contentWidth - lipgloss.Width(left) - lipgloss.Width(right) - 1
+			return styleStatusBar.Width(barWidth).Render(left + strings.Repeat(" ", pad) + right)
 		}
 		segments = segments[:len(segments)-1]
 	}
 	// No segment fits: truncate the left message (rune-based truncation can
 	// still overflow with wide glyphs, but never panics — styleWidth only pads).
-	if lipgloss.Width(left) > widthAvail-1 {
-		left = truncate(left, widthAvail-1)
+	if lipgloss.Width(left) > contentWidth-1 {
+		left = truncate(left, max(1, contentWidth-1))
 	}
-	return styleStatusBar.Width(a.widthAvail()).Render(left)
+	return styleStatusBar.Width(barWidth).Render(left)
 }
 
 // statusLineSegments renders the configured Codex-compatible footer items.
@@ -1993,6 +2090,16 @@ func (a *app) statusLineSegments() []string {
 	return out
 }
 
+func (a *app) permissionOptionCount() int {
+	if a.pendingPerm == nil {
+		return 0
+	}
+	if a.pendingPerm.Kind == engine.PermWrite || a.pendingPerm.Kind == engine.PermDelete {
+		return 3
+	}
+	return 4
+}
+
 func (a *app) renderPermission() string {
 	if a.pendingPerm == nil {
 		return ""
@@ -2001,58 +2108,122 @@ func (a *app) renderPermission() string {
 	allowKey := a.engine.KeymapBinding("permission_allow")
 	alwaysKey := a.engine.KeymapBinding("permission_always")
 	denyKey := a.engine.KeymapBinding("permission_deny")
-	neverKey := a.engine.KeymapBinding("permission_never")
 	var b strings.Builder
 	switch req.Kind {
 	case engine.PermExecute:
-		b.WriteString("Would you like to run the following command?\n")
+		b.WriteString(styleTitle.Render("Would you like to run the following command?") + "\n")
 	case engine.PermRead:
-		b.WriteString("Would you like to read the following path?\n")
-	case engine.PermWrite:
-		b.WriteString("Would you like to modify the following path?\n")
+		b.WriteString(styleTitle.Render("Would you like to read the following path?") + "\n")
+	case engine.PermWrite, engine.PermDelete:
+		b.WriteString(styleTitle.Render("Would you like to make the following edits?") + "\n")
 	default:
-		b.WriteString("Would you like to grant this permission?\n")
+		b.WriteString(styleTitle.Render("Would you like to grant this permission?") + "\n")
 	}
 	b.WriteString("\n")
 	if req.Description != "" {
-		b.WriteString("  Reason: " + styleDim.Render(req.Description) + "\n")
+		b.WriteString(styleDim.Render("  Reason: ") + styleBody.Render(req.Description) + "\n")
 	}
 	if req.Risk != "" {
-		b.WriteString("  Risk:   " + styleDim.Render(req.Risk) + "\n")
+		b.WriteString(styleDim.Render("  Risk:   ") + styleValue.Render(req.Risk) + "\n")
 	}
 	if req.Command != "" {
 		b.WriteString("\n  " + stylePrompt.Render(codexPrompt) + " " + styleCmdName.Render(req.Command) + "\n")
 	} else if req.Target != "" {
-		b.WriteString("\n  " + styleDim.Render(req.Target) + "\n")
+		b.WriteString("\n  " + stylePrefix.Render("▌ ") + styleCmdName.Render(req.Target) + "\n")
+	}
+	if req.Preview != "" {
+		lines := strings.Split(strings.TrimRight(req.Preview, "\n"), "\n")
+		if len(lines) > 12 {
+			lines = append(lines[:12], "… preview truncated")
+		}
+		b.WriteString("\n" + styleDim.Render("  Proposed changes") + "\n")
+		for _, line := range lines {
+			b.WriteString("  " + styleOutput.Render(line) + "\n")
+		}
 	}
 	b.WriteString("\n")
-	// Codex-style option list: the recommended action is pre-selected with
-	// "›", every option carries its direct key shortcut, and the wording
-	// matches codex-rs approval_overlay.rs exec_options.
-	b.WriteString("  " + styleKey.Render("›") + " 1. Yes, proceed (" + styleKey.Render(allowKey) + ")\n")
-	b.WriteString("     2. Yes, and don't ask again for this command in this session (" + styleKey.Render(alwaysKey) + ")\n")
-	b.WriteString("     3. No, continue without running it (" + styleKey.Render(denyKey) + ")\n")
-	b.WriteString("     4. No, and don't ask again for this command in this session (" + styleKey.Render(neverKey) + ")\n")
-	b.WriteString("\n")
-	b.WriteString("  " + styleDim.Render("Press 1/2/3/4 to choose · esc to reply instead"))
-	return b.String()
-}
 
-// styleKeyRenderEsc returns the styled "esc" hint used in the permission
-// overlay so all four option lines share the same rendering for the key.
-func styleKeyRenderEsc(s string) string {
-	return styleKey.Render(s)
+	labels := []string{
+		"Yes, proceed",
+		"Yes, and don't ask again for this command in this session",
+		"No, continue without running it",
+		"No, and tell Astra what to do differently",
+	}
+	if req.Kind == engine.PermWrite || req.Kind == engine.PermDelete {
+		labels[1] = "Yes, and don't ask again for these files"
+	}
+	keys := []string{allowKey, alwaysKey, denyKey, "esc"}
+	for i := 0; i < a.permissionOptionCount(); i++ {
+		prefix := "  "
+		if i == a.permissionSelection {
+			prefix = "  " + styleKey.Render("›") + " "
+		} else {
+			prefix += "  "
+		}
+		shortcut := keys[i]
+		if i == 3 {
+			shortcut = "esc"
+		}
+		line := prefix + styleDim.Render(fmt.Sprintf("%d. ", i+1)) + styleBody.Render(labels[i]) + " " + styleKey.Render("("+shortcut+")")
+		if i == a.permissionSelection {
+			line = prefix + styleDim.Render(fmt.Sprintf("%d. ", i+1)) + styleTitle.Render(labels[i]) + " " + styleKey.Render("("+shortcut+")")
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n")
+	footer := "↑↓ select · enter to confirm · esc to cancel"
+	if a.permissionOptionCount() == 3 {
+		footer = "↑↓ select · enter to confirm · esc to cancel"
+	}
+	b.WriteString("  " + styleDim.Render(footer))
+	return stylePanel.Width(max(1, a.mainWidth()-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 func (a *app) renderAsk() string {
 	if a.pendingAsk == nil {
 		return ""
 	}
+	mainWidth := a.mainWidth()
+	a.composer.ta.SetHeight(a.composer.ContentLines())
+	input := a.composer.ta.View()
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Question from agent") + "\n")
-	b.WriteString(a.pendingAsk.question + "\n")
-	b.WriteString(styleDim.Render("type an answer and press enter · esc to cancel") + "\n")
-	return stylePanel.Width(a.width-2).Render(b.String()) + "\n" + a.composer.View(a.width)
+	b.WriteString(styleKey.Render("▌ ") + styleTitle.Render("Question from Astra") + "\n")
+	b.WriteString(styleKey.Render("▌ ") + styleBody.Render(a.pendingAsk.question) + "\n\n")
+	b.WriteString(styleKey.Render("▌ ") + styleComposerFocused.Width(max(1, mainWidth-6)).Render(input) + "\n")
+	b.WriteString(styleDim.Render("▌ enter submit · esc cancel"))
+	return stylePanel.Width(max(1, mainWidth-2)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+func (a *app) renderPlanApproval() string {
+	if a.planApproval == nil {
+		return ""
+	}
+	labels := []struct {
+		name   string
+		detail string
+	}{
+		{"Yes, implement this plan", "Switch to Default mode and start coding."},
+		{"Yes, clear context and implement", "Start a fresh context with this plan."},
+		{"No, stay in Plan mode", "Continue planning with Astra."},
+	}
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("Implement this plan?") + "\n\n")
+	for i, item := range labels {
+		prefix := "  "
+		if i == a.planSelection {
+			prefix = "  " + styleKey.Render("›") + " "
+		}
+		line := prefix + styleDim.Render(fmt.Sprintf("%d. ", i+1))
+		if i == a.planSelection {
+			line += styleTitle.Render(item.name)
+		} else {
+			line += styleBody.Render(item.name)
+		}
+		b.WriteString(line + "\n")
+		b.WriteString("     " + styleDim.Render(item.detail) + "\n")
+	}
+	b.WriteString("\n" + styleDim.Render("↑↓ select · enter to confirm · esc cancel"))
+	return stylePanel.Width(max(1, a.mainWidth()-2)).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 func (a *app) viewportHeight() int {
@@ -2076,6 +2247,8 @@ func (a *app) viewportHeight() int {
 		composerLines = lipgloss.Height(a.renderPermission())
 	case modeAsk:
 		composerLines = lipgloss.Height(a.renderAsk())
+	case modePlanApproval:
+		composerLines = lipgloss.Height(a.renderPlanApproval())
 	default:
 		composerLines = a.composer.BoxHeight()
 	}
@@ -2135,8 +2308,8 @@ func (a *app) renderItem(it *chatItem) string {
 // subtle background tint (user_message_style), with a bold-dim "› " prefix on
 // the first line, a 2-column continuation gutter, and no decorative border.
 func (a *app) renderUser(text string) string {
-	w := max(30, a.widthAvail()-2)
-	lines := wrapWords(text, max(30, w-2))
+	w := max(1, a.widthAvail()-2)
+	lines := wrapWords(text, max(8, w-2))
 	var b strings.Builder
 	b.WriteString(styleUserMsg.Width(w).Render(""))
 	b.WriteString("\n")
@@ -2412,6 +2585,9 @@ func fmtElapsedCompact(d time.Duration) string {
 //	"tab to queue message" while the agent is busy
 //	"esc cancel · enter submit" while the agent is asking the user
 func (a *app) renderComposerHint() string {
+	if a.mode == modePlanApproval {
+		return ""
+	}
 	if a.mode == modePermission {
 		return styleDim.Render("choose an option above · esc to cancel")
 	}
@@ -2476,7 +2652,7 @@ func (a *app) cyclePermissionMode() {
 // modal is pending, otherwise the plain session title.
 func (a *app) syncTitle() tea.Cmd {
 	title := "Astra · " + filepath.Base(a.root)
-	if a.mode == modePermission || a.mode == modeAsk {
+	if a.mode == modePermission || a.mode == modeAsk || a.mode == modePlanApproval {
 		prefix := "[ ! ] Action Required"
 		if motionEnabled() && (time.Now().UnixMilli()/600)%2 == 1 {
 			prefix = "[ . ] Action Required"

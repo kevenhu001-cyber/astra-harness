@@ -35,6 +35,7 @@ type PermissionRequest struct {
 	Description string `json:"description"`
 	Command     string `json:"command,omitempty"`
 	Risk        string `json:"risk,omitempty"`
+	Preview     string `json:"preview,omitempty"`
 }
 
 // PermissionDecision is the operator's answer.
@@ -69,6 +70,17 @@ func NewPermissionManager(root, mode string, prompt PromptFunc) *PermissionManag
 
 // Check decides whether a capability may proceed.
 func (p *PermissionManager) Check(kind, target, description, command string) (bool, error) {
+	return p.check(kind, target, description, command, "")
+}
+
+// CheckWithPreview is the approval path for file changes. The preview is
+// carried to the UI so the approval page can show the exact proposed diff
+// before the operator confirms it.
+func (p *PermissionManager) CheckWithPreview(kind, target, description, command, preview string) (bool, error) {
+	return p.check(kind, target, description, command, preview)
+}
+
+func (p *PermissionManager) check(kind, target, description, command, preview string) (bool, error) {
 	p.mu.Lock()
 	plan := p.PlanMode
 	mode := p.Mode
@@ -99,7 +111,7 @@ func (p *PermissionManager) Check(kind, target, description, command string) (bo
 	}
 	req := PermissionRequest{
 		ID: newReqID(), Kind: kind, Target: target,
-		Description: description, Command: command, Risk: riskLabel(kind, command),
+		Description: description, Command: command, Risk: riskLabel(kind, command), Preview: preview,
 	}
 	dec, err := p.Prompt(req)
 	if err != nil {

@@ -4,11 +4,13 @@
 #
 #   curl -fsSL https://astracode.topodrive.top/install/install.sh | sh
 #
+# The script is hosted by the official Astra site, while release assets and
+# checksums come from the GitHub Release published by the tag workflow.
 # Override the download base or target directory with:
 #   ASTRA_BASE_URL=https://... ASTRA_INSTALL_DIR=/opt/astra ./install.sh
 set -eu
 
-BASE_URL="${ASTRA_BASE_URL:-https://astracode.topodrive.top/install}"
+BASE_URL="${ASTRA_BASE_URL:-https://github.com/kevenhu001-cyber/astra-harness/releases/latest/download}"
 INSTALL_DIR="${ASTRA_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"

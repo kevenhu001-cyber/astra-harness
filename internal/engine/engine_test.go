@@ -39,6 +39,22 @@ func TestPermissionManagerPlanMode(t *testing.T) {
 	}
 }
 
+func TestPermissionManagerApprovalPreview(t *testing.T) {
+	preview := "--- app.go\n+++ app.go\n-old\n+new"
+	seen := ""
+	p := NewPermissionManager("/tmp/x", ModeAsk, func(req PermissionRequest) (PermissionDecision, error) {
+		seen = req.Preview
+		return PermissionDecision{Allowed: false}, nil
+	})
+	ok, err := p.CheckWithPreview(PermWrite, "app.go", "edit_file", "", preview)
+	if err != nil || ok {
+		t.Fatalf("expected preview approval to be denied, got ok=%v err=%v", ok, err)
+	}
+	if seen != preview {
+		t.Fatalf("approval preview lost: %q", seen)
+	}
+}
+
 func TestPermissionManagerDenyAlways(t *testing.T) {
 	p := NewPermissionManager("/tmp/x", ModeAsk, func(req PermissionRequest) (PermissionDecision, error) {
 		return PermissionDecision{Allowed: false, Always: true}, nil

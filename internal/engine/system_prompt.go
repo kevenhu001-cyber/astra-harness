@@ -11,8 +11,7 @@ var astraBasePrompt string
 
 // buildSystemPrompt assembles the system prompt sent to the model:
 //
-//  1. The static Astra persona and working rules (system_prompt.md),
-//     modeled on Codex's CLI prompt (codex-rs/core/gpt_5_2_prompt.md).
+//  1. The static Astra persona and working rules (system_prompt.md).
 //  2. Mode-specific sandbox/approval instructions.
 //  3. Project instructions collected from AGENTS.md files.
 //  4. The compiled knowledge state (goals, claims, evidence, unknowns).
@@ -37,10 +36,9 @@ func (e *Engine) buildSystemPrompt() string {
 	return b.String()
 }
 
-// permissionInstructions renders the active sandbox/approval guidance, the
-// way Codex injects permission-profile instructions per run (prompts/src/
-// permissions_instructions.rs). The text tells the model what the current
-// permission mode means in practice.
+// permissionInstructions renders the active sandbox/approval guidance for
+// each run. The text tells the model what the current permission mode means
+// in practice.
 func (e *Engine) permissionInstructions() string {
 	switch {
 	case e.Perm.IsPlanMode():

@@ -114,4 +114,7 @@ func TestBuildSystemPromptListsMcpTools(t *testing.T) {
 	if !strings.Contains(p, "mcp__<server>__<tool>") {
 		t.Fatalf("MCP guidance missing from prompt")
 	}
+	if strings.Contains(p, "Codex") || strings.Contains(p, "codex") {
+		t.Fatalf("system prompt should use Astra branding, got Codex reference")
+	}
 }
