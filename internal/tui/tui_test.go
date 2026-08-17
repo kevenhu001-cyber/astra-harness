@@ -601,6 +601,36 @@ func TestEngineEventChainStayArmed(t *testing.T) {
 	}
 }
 
+// TestUnSizedTerminalViewNoPanic guards against the startup panic where the
+// first View() runs before any WindowSizeMsg (width/height still 0) and the
+// resume-picker overlay computed a negative strings.Repeat count.
+func TestUnSizedTerminalViewNoPanic(t *testing.T) {
+	a := newTestApp(t)
+	a.overlay = overlayHelp()
+	a.width, a.height = 0, 0
+	if out := a.View(); out != "" {
+		t.Fatalf("unsized frame should render blank, got %q", out)
+	}
+}
+
+// TestTabbedOverlayTinyWidthNoPanic verifies the tabbed overlay renderer
+// clamps tiny/unsized widths instead of panicking on strings.Repeat.
+func TestTabbedOverlayTinyWidthNoPanic(t *testing.T) {
+	o := overlayHelp()
+	if o == nil {
+		t.Fatal("help overlay should exist")
+	}
+	if out := o.View(0, 5); out == "" {
+		t.Fatal("tabbed overlay should still render at width 0")
+	}
+	if out := o.View(8, 5); out == "" {
+		t.Fatal("tabbed overlay should still render at tiny width")
+	}
+	if out := o.View(60, 24); out == "" {
+		t.Fatal("tabbed overlay should render at normal width")
+	}
+}
+
 // TestEscPauseRunningAgent verifies that esc while the agent is busy pauses
 // the run (engine stopped) instead of doing nothing.
 func TestEscPauseRunningAgent(t *testing.T) {

@@ -217,11 +217,19 @@ func renderTabbedOverlay(o *overlay, width, height int) string {
 	if maxW > 130 {
 		maxW = 130
 	}
+	// Tiny/unsized terminals would make the "─" rule and pane math negative.
+	// Clamp so strings.Repeat never receives a negative count and panics.
+	if maxW < 20 {
+		maxW = 20
+	}
 	leftW := maxW/2 - 2
 	if leftW < 28 {
 		leftW = 28
 	}
 	rightW := maxW - leftW - 6
+	if rightW < 4 {
+		rightW = 4
+	}
 
 	var tabs strings.Builder
 	if len(o.tabs) > 0 {

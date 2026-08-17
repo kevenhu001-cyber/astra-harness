@@ -1716,6 +1716,13 @@ func (a *app) View() string {
 	if a.quit {
 		return ""
 	}
+	// The first frame is rendered before the terminal reports its size
+	// (WindowSizeMsg arrives right after Init); width/height can be 0 here and
+	// geometry-based renderers (overlays, separators) panic on negative sizes.
+	// Render a blank frame and let Bubble Tea re-render once it knows the size.
+	if a.width <= 0 || a.height <= 0 {
+		return ""
+	}
 	sideW := 0
 	if a.sidebar.visible {
 		sideW = 26
