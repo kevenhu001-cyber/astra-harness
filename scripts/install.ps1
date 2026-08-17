@@ -1,13 +1,13 @@
 #
 # Astra Harness one-line installer (Windows PowerShell 5.1+).
 #
-#   irm https://topodrive.top/astracode/install/install.ps1 | iex
+#   irm https://astracode.topodrive.top/install/install.ps1 | iex
 #
 # Override the download base or target directory with:
 #   $env:ASTRA_BASE_URL = "https://..."; $env:ASTRA_INSTALL_DIR = "D:\astra"
 $ErrorActionPreference = "Stop"
 
-$BaseUrl = if ($env:ASTRA_BASE_URL) { $env:ASTRA_BASE_URL } else { "https://topodrive.top/astracode/install" }
+$BaseUrl = if ($env:ASTRA_BASE_URL) { $env:ASTRA_BASE_URL } else { "https://astracode.topodrive.top/install" }
 $InstallDir = if ($env:ASTRA_INSTALL_DIR) { $env:ASTRA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\astra" }
 
 $arch = $env:PROCESSOR_ARCHITECTURE
