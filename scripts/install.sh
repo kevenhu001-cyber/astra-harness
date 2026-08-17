@@ -2,13 +2,13 @@
 #
 # Astra Harness one-line installer (Linux / macOS).
 #
-#   curl -fsSL https://topodrive.top/astracode/install/install.sh | sh
+#   curl -fsSL https://astracode.topodrive.top/install/install.sh | sh
 #
 # Override the download base or target directory with:
 #   ASTRA_BASE_URL=https://... ASTRA_INSTALL_DIR=/opt/astra ./install.sh
 set -eu
 
-BASE_URL="${ASTRA_BASE_URL:-https://topodrive.top/astracode/install}"
+BASE_URL="${ASTRA_BASE_URL:-https://astracode.topodrive.top/install}"
 INSTALL_DIR="${ASTRA_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"

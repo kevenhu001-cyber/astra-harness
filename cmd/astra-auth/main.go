@@ -18,6 +18,7 @@ func main() {
 	addr := flag.String("addr", envOr("ASTRA_AUTH_ADDR", ":8080"), "listen address")
 	baseURL := flag.String("base-url", envOr("ASTRA_AUTH_BASE_URL", "http://localhost:8080"), "public base URL for verification links")
 	dataDir := flag.String("data-dir", envOr("ASTRA_AUTH_DATA_DIR", defaultDataDir()), "directory for auth state")
+	cookiePath := flag.String("cookie-path", envOr("ASTRA_AUTH_COOKIE_PATH", "/"), "scope of the session cookie path (use a path that does not prefix /astracode/ to keep it off the installer)")
 	flag.Parse()
 
 	store, err := authsrv.OpenStore(filepath.Join(*dataDir, "auth.json"))
@@ -34,7 +35,7 @@ func main() {
 		log.Printf("mailer: console (verification links printed to this log); set SMTP_HOST/SMTP_USER/SMTP_PASS to send real email")
 	}
 
-	srv := authsrv.New(store, mailer, authsrv.Options{BaseURL: *baseURL})
+	srv := authsrv.New(store, mailer, authsrv.Options{BaseURL: *baseURL, CookiePath: *cookiePath})
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
