@@ -105,7 +105,7 @@ type app struct {
 	palette       palette
 	sidebar       sidebar
 	overlay       *overlay
-	settings      *modelSettings
+	settings      *providerSettings
 	spinner       *asciiAnim
 	ignition      *effortIgnition
 	headerHeight  int
@@ -1006,7 +1006,7 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 			a.overlay = overlayModels(a.engine)
 		}
 	case "/config", "/settings":
-		a.settings = newModelSettings(a)
+		a.settings = newProviderSettings(a)
 	case "/set-url":
 		id, val, err := providerArg(args)
 		if err != nil {
@@ -1359,7 +1359,7 @@ func (a *app) overlaySelect(selected string) {
 		}
 	case "Models — pick provider/model":
 		if selected == "⚙config" {
-			a.settings = newModelSettings(a)
+			a.settings = newProviderSettings(a)
 			return
 		}
 		parts := strings.SplitN(selected, "|", 2)

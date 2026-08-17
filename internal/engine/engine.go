@@ -871,6 +871,82 @@ func (e *Engine) UpdateProvider(id, baseURL, apiKey, model string) error {
 	return nil
 }
 
+// UpsertProvider replaces an existing provider (matched by ID) or appends a
+// new one, then persists and rebuilds the router. An empty APIKey keeps the
+// previously stored key so a masked key field can be left untouched.
+func (e *Engine) UpsertProvider(p ProviderConfig) error {
+	if p.ID == "" {
+		return fmt.Errorf("provider id is required")
+	}
+	e.mu.Lock()
+	idx := -1
+	for i := range e.Config.Providers {
+		if e.Config.Providers[i].ID == p.ID {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		if p.APIKey == "" {
+			p.APIKey = e.Config.Providers[idx].APIKey
+		}
+		e.Config.Providers[idx] = p
+	} else {
+		e.Config.Providers = append(e.Config.Providers, p)
+	}
+	e.mu.Unlock()
+	if err := SaveConfig(e.Root, e.Config); err != nil {
+		return err
+	}
+	e.refreshRouter()
+	return nil
+}
+
+// DeleteProvider removes a provider by ID and persists the change. If the
+// deleted provider was the active one, the engine falls back to the first
+// remaining provider/model.
+func (e *Engine) DeleteProvider(id string) error {
+	e.mu.Lock()
+	out := make([]ProviderConfig, 0, len(e.Config.Providers))
+	removed := false
+	for _, p := range e.Config.Providers {
+		if p.ID == id {
+			removed = true
+			continue
+		}
+		out = append(out, p)
+	}
+	e.Config.Providers = out
+	if e.ProviderID() == id {
+		if len(out) > 0 {
+			e.Config.DefaultProvider = out[0].ID
+			if len(out[0].Models) > 0 {
+				e.Config.DefaultModel = out[0].Models[0]
+			}
+		} else {
+			e.Config.DefaultProvider = ""
+			e.Config.DefaultModel = ""
+		}
+	}
+	e.mu.Unlock()
+	if err := SaveConfig(e.Root, e.Config); err != nil {
+		return err
+	}
+	e.refreshRouter()
+	if removed && e.ProviderID() == "" && len(e.Config.Providers) > 0 {
+		first := e.Config.Providers[0]
+		_ = e.SwitchModel(first.ID, firstModel(first))
+	}
+	return nil
+}
+
+func firstModel(p ProviderConfig) string {
+	if len(p.Models) > 0 {
+		return p.Models[0]
+	}
+	return ""
+}
+
 // refreshRouter rebuilds providers from Config and keeps the active provider
 // when it is still available after a configuration change.
 func (e *Engine) refreshRouter() {

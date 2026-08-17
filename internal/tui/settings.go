@@ -11,30 +11,34 @@ import (
 	"github.com/kevenhu001-cyber/astra-harness/internal/engine"
 )
 
-// modelSettings is the interactive provider-configuration form: a selectable
-// provider chip row, three labeled text fields (base URL, API key, model ID),
-// and an action button row. It is keyboard- and mouse-driven so the user
-// never has to type long /set-* commands.
-type modelSettings struct {
-	eng       *engine.Engine
-	providers []engine.ProviderConfig
-	provSel   int
-	fields    []textinput.Model // 0: base URL, 1: API key, 2: model ID
-	fieldSel  int
-	zone      settingsZone
-	btnSel    int
-	origCount int // provider count when the form opened (for cancel rollback)
-	notice    string
-	err       string
-	rects     []settingsRect
+// providerSettings is the opencode-style provider configuration surface. It is
+// a small state machine with two top-level views that mirror opencode's
+// connect-provider flow:
+//
+//   - pvPicker: a vertical grid of provider cards (Provider Picker) — one card
+//     per configured provider plus a trailing "+ Custom provider" card.
+//   - pvEditor: a Connect / Edit view for a single provider, or a Custom
+//     Provider form when creating a new one (ID · Name · Type · Base URL ·
+//     API Key · repeatable Models rows).
+//
+// The whole surface is keyboard- and mouse-driven.
+type providerSettings struct {
+	eng     *engine.Engine
+	view    providerView
+	notice  string
+	err     string
+	rects   []settingsRect
+
+	pickSel int // selected card in the picker
+
+	ed providerEditor // active editor (pvEditor)
 }
 
-type settingsZone int
+type providerView int
 
 const (
-	settingsZoneProviders settingsZone = iota
-	settingsZoneFields
-	settingsZoneButtons
+	pvPicker providerView = iota
+	pvEditor
 )
 
 // settingsRect is a clickable screen region recorded during View so a later
@@ -49,48 +53,121 @@ type settingsButton struct {
 	action string
 }
 
-var settingsButtons = []settingsButton{
-	{label: "Save & Use", action: "save-use"},
-	{label: "Save", action: "save"},
-	{label: "Reset", action: "reset"},
-	{label: "Cancel", action: "cancel"},
+// providerEditor edits a single provider (existing or new). It works on an
+// in-memory copy (ed.prov) and only persists when the user saves.
+type providerEditor struct {
+	prov     engine.ProviderConfig
+	isNew    bool
+	isCustom bool // user-authored provider: ID + Type + Models are editable
+	active   bool // this provider is the engine's active provider
+
+	fields   []fieldDef
+	fieldIdx int
+	zone     provZone
+
+	models   []string // editable model list
+	defModel string   // model marked as default for this provider
+	modelSel int
+	editing  bool // editing a model row's text
+	modelEdit textinput.Model
+
+	btnSel int
 }
 
-func newModelSettings(a *app) *modelSettings {
-	s := &modelSettings{
-		eng:       a.engine,
-		providers: a.engine.Config.Providers,
-		origCount: len(a.engine.Config.Providers),
+type fieldDef struct {
+	kind fieldKind
+	ti   textinput.Model
+}
+
+type fieldKind int
+
+const (
+	fkID fieldKind = iota
+	fkName
+	fkType
+	fkBaseURL
+	fkAPIKey
+)
+
+type provZone int
+
+const (
+	zoneFields provZone = iota
+	zoneModels
+	zoneButtons
+)
+
+// providerButtons returns the action row for the editor. A new custom provider
+// only offers Create / Cancel; an existing provider offers Save & Use / Save /
+// Delete / Cancel.
+func providerButtons(isNew bool) []settingsButton {
+	if isNew {
+		return []settingsButton{
+			{label: "Create", action: "create"},
+			{label: "Cancel", action: "cancel"},
+		}
 	}
-	for i, p := range s.providers {
+	return []settingsButton{
+		{label: "Save & Use", action: "save-use"},
+		{label: "Save", action: "save"},
+		{label: "Delete", action: "delete"},
+		{label: "Cancel", action: "cancel"},
+	}
+}
+
+func newProviderSettings(a *app) *providerSettings {
+	s := &providerSettings{eng: a.engine, view: pvPicker}
+	for i, p := range a.engine.Config.Providers {
 		if p.ID == a.engine.ProviderID() {
-			s.provSel = i
+			s.pickSel = i
 			break
 		}
-	}
-	for i := 0; i < 3; i++ {
-		ti := textinput.New()
-		ti.Prompt = ""
-		ti.CharLimit = 0
-		if i == 1 {
-			ti.EchoMode = textinput.EchoPassword
-			ti.EchoCharacter = '•'
-		}
-		s.fields = append(s.fields, ti)
-	}
-	s.loadFields()
-	// With a single provider, jump straight into the first field so the
-	// user can type immediately; otherwise let them pick a provider first.
-	if len(s.providers) == 1 {
-		s.zone = settingsZoneFields
-		s.fieldSel = 0
-		s.focusField()
 	}
 	return s
 }
 
+func newProviderEditor(a *app, prov engine.ProviderConfig, isNew bool) providerEditor {
+	ed := providerEditor{
+		prov:     prov,
+		isNew:    isNew,
+		isCustom: isNew || strings.HasPrefix(prov.ID, "custom"),
+		active:   prov.ID == a.engine.ProviderID(),
+	}
+	if ed.isCustom {
+		ed.fields = append(ed.fields, mkField(fkID, prov.ID))
+	}
+	ed.fields = append(ed.fields, mkField(fkName, prov.Name))
+	if ed.isCustom {
+		ed.fields = append(ed.fields, mkField(fkType, prov.Type))
+	}
+	ed.fields = append(ed.fields, mkField(fkBaseURL, prov.BaseURL))
+	ed.fields = append(ed.fields, mkField(fkAPIKey, ""))
+	for i := range ed.fields {
+		if ed.fields[i].kind == fkAPIKey {
+			ed.fields[i].ti.EchoMode = textinput.EchoPassword
+			ed.fields[i].ti.EchoCharacter = '•'
+			ed.fields[i].ti.Placeholder = keyHint(prov)
+		}
+	}
+	ed.models = append(ed.models, prov.Models...)
+	if len(ed.models) == 0 {
+		ed.models = append(ed.models, "")
+	}
+	ed.defModel = defaultModelFor(a, prov)
+	ed.modelEdit = textinput.New()
+	ed.modelEdit.Prompt = ""
+	return ed
+}
+
+func mkField(kind fieldKind, val string) fieldDef {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.SetValue(val)
+	return fieldDef{kind: kind, ti: ti}
+}
+
 // keyHint explains how the API key is currently provided.
-func (s *modelSettings) keyHint(p engine.ProviderConfig) string {
+func keyHint(p engine.ProviderConfig) string {
 	if p.APIKey != "" {
 		return "already set — type to replace"
 	}
@@ -100,50 +177,64 @@ func (s *modelSettings) keyHint(p engine.ProviderConfig) string {
 	return "type an API key (saved to .astra/config.json)"
 }
 
-// loadFields fills the text fields from the selected provider.
-func (s *modelSettings) loadFields() {
-	if len(s.providers) == 0 {
-		return
-	}
-	p := s.providers[s.provSel]
-	s.fields[0].SetValue(p.BaseURL)
-	s.fields[1].SetValue("")
-	s.fields[1].Placeholder = s.keyHint(p)
-	model := ""
+// defaultModelFor picks the default model for the edited provider: the global
+// default when it belongs to this provider, otherwise the first model.
+func defaultModelFor(a *app, p engine.ProviderConfig) string {
 	for _, m := range p.Models {
-		if m == s.eng.Config.DefaultModel {
-			model = m
-			break
+		if m == a.engine.Config.DefaultModel {
+			return m
 		}
 	}
-	if model == "" && len(p.Models) > 0 {
-		model = p.Models[0]
+	if len(p.Models) > 0 {
+		return p.Models[0]
 	}
-	s.fields[2].SetValue(model)
+	return ""
 }
 
-// focusField focuses the current text field (and blurs the others).
-func (s *modelSettings) focusField() {
-	for i := range s.fields {
-		if i == s.fieldSel {
-			s.fields[i].Focus()
+func providerConfigured(p engine.ProviderConfig) bool {
+	return p.APIKey != "" || p.APIKeyEnv != ""
+}
+
+func (ed *providerEditor) fieldVal(kind fieldKind) string {
+	for _, f := range ed.fields {
+		if f.kind == kind {
+			return strings.TrimSpace(f.ti.Value())
+		}
+	}
+	return ""
+}
+
+func (ed *providerEditor) focusField() {
+	for i := range ed.fields {
+		if i == ed.fieldIdx {
+			ed.fields[i].ti.Focus()
 		} else {
-			s.fields[i].Blur()
+			ed.fields[i].ti.Blur()
 		}
 	}
 }
 
-// blurFields blurs every text field (used when leaving the fields zone).
-func (s *modelSettings) blurFields() {
-	for i := range s.fields {
-		s.fields[i].Blur()
+func (ed *providerEditor) blurFields() {
+	for i := range ed.fields {
+		ed.fields[i].ti.Blur()
 	}
 }
 
-// update routes one message through the form. Returns (done, closeMsg, cmd):
-// done closes the form (closeMsg is shown as a system message), cmd is a
-// tea command to run (cursor blink while a field is focused).
-func (s *modelSettings) update(msg tea.Msg, a *app) (bool, string, tea.Cmd) {
+func (ed *providerEditor) cycleType() {
+	if ed.prov.Type == "anthropic" {
+		ed.prov.Type = "openai-compatible"
+	} else {
+		ed.prov.Type = "anthropic"
+	}
+	for i := range ed.fields {
+		if ed.fields[i].kind == fkType {
+			ed.fields[i].ti.SetValue(ed.prov.Type)
+		}
+	}
+}
+
+// update routes one message through the surface. Returns (done, closeMsg, cmd).
+func (s *providerSettings) update(msg tea.Msg, a *app) (bool, string, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.MouseMsg:
 		if m.Type == tea.MouseLeft {
@@ -160,121 +251,215 @@ func (s *modelSettings) update(msg tea.Msg, a *app) (bool, string, tea.Cmd) {
 	return false, "", nil
 }
 
-func (s *modelSettings) handleKey(msg tea.KeyMsg, a *app) (bool, string, tea.Cmd) {
+func (s *providerSettings) handleKey(msg tea.KeyMsg, a *app) (bool, string, tea.Cmd) {
 	k := msg.String()
-	switch s.zone {
-	case settingsZoneProviders:
-		switch k {
-		case "esc":
-			return s.cancel(a)
-		case "up", "k":
-			if len(s.providers) > 1 {
-				s.provSel = (s.provSel - 1 + len(s.providers)) % len(s.providers)
-				s.loadFields()
-			}
-		case "down", "j":
-			if len(s.providers) > 1 {
-				s.provSel = (s.provSel + 1) % len(s.providers)
-				s.loadFields()
-			}
-		case "enter", "tab", "right":
-			if len(s.providers) > 0 {
-				s.zone = settingsZoneFields
-				s.fieldSel = 0
-				s.focusField()
-				return false, "", s.fields[0].Focus()
-			}
-		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(k[0] - '1')
-			if idx < len(s.providers) {
-				s.provSel = idx
-				s.loadFields()
-			}
-		case "a":
-			s.addProvider()
+	if s.view == pvPicker {
+		return s.handlePickerKey(k, a)
+	}
+	return s.handleEditorKey(msg, a)
+}
+
+// handlePickerKey drives the Provider Picker grid.
+func (s *providerSettings) handlePickerKey(k string, a *app) (bool, string, tea.Cmd) {
+	count := len(s.eng.Config.Providers) + 1 // +1 for the custom card
+	switch k {
+	case "esc":
+		return true, "", nil
+	case "down", "j":
+		s.pickSel = (s.pickSel + 1) % count
+	case "up", "k":
+		s.pickSel = (s.pickSel - 1 + count) % count
+	case "enter", " ", "l":
+		if s.pickSel < len(s.eng.Config.Providers) {
+			s.openEditor(a, s.eng.Config.Providers[s.pickSel], false)
+		} else {
+			s.openCustom(a)
 		}
-	case settingsZoneFields:
+	case "a":
+		s.openCustom(a)
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		idx := int(k[0] - '1')
+		if idx < len(s.eng.Config.Providers) {
+			s.pickSel = idx
+			s.openEditor(a, s.eng.Config.Providers[idx], false)
+		}
+	}
+	return false, "", nil
+}
+
+func (s *providerSettings) openEditor(a *app, prov engine.ProviderConfig, isNew bool) {
+	s.ed = newProviderEditor(a, prov, isNew)
+	s.view = pvEditor
+	s.ed.zone = zoneFields
+	s.ed.fieldIdx = 0
+	s.ed.focusField()
+	s.err = ""
+	s.notice = ""
+}
+
+func (s *providerSettings) openCustom(a *app) {
+	prov := engine.ProviderConfig{
+		ID:      "",
+		Type:    "openai-compatible",
+		Name:    "",
+		BaseURL: "",
+		Models:  []string{""},
+	}
+	s.openEditor(a, prov, true)
+}
+
+func (s *providerSettings) backToPicker(a *app) {
+	s.view = pvPicker
+	s.ed = providerEditor{}
+	s.err = ""
+}
+
+// handleEditorKey drives the Connect / Edit / Custom form.
+func (s *providerSettings) handleEditorKey(m tea.KeyMsg, a *app) (bool, string, tea.Cmd) {
+	k := m.String()
+	ed := &s.ed
+	switch ed.zone {
+	case zoneFields:
 		switch k {
 		case "esc":
-			s.zone = settingsZoneProviders
-			s.blurFields()
-		case "tab", "enter", "down":
-			s.fieldSel++
-			if s.fieldSel >= len(s.fields) {
-				s.zone = settingsZoneButtons
-				s.btnSel = 0
-				s.blurFields()
+			s.backToPicker(a)
+			return false, "", nil
+		case "tab", "down", "enter":
+			if ed.curField().kind == fkType && k == "enter" {
+				ed.cycleType()
+				return false, "", nil
+			}
+			ed.fieldIdx++
+			if ed.fieldIdx >= len(ed.fields) {
+				ed.zone = zoneModels
+				ed.modelSel = clamp(ed.modelSel, 0, len(ed.models)-1)
+				ed.blurFields()
 			} else {
-				s.focusField()
-				return false, "", s.fields[s.fieldSel].Focus()
+				ed.focusField()
+				return false, "", ed.fields[ed.fieldIdx].ti.Focus()
 			}
 		case "shift+tab", "up":
-			if s.fieldSel > 0 {
-				s.fieldSel--
-				s.focusField()
-				return false, "", s.fields[s.fieldSel].Focus()
+			ed.fieldIdx--
+			if ed.fieldIdx < 0 {
+				ed.zone = zoneButtons
+				ed.btnSel = len(providerButtons(ed.isNew)) - 1
+				ed.blurFields()
+			} else {
+				ed.focusField()
+				return false, "", ed.fields[ed.fieldIdx].ti.Focus()
 			}
-			s.zone = settingsZoneProviders
-			s.blurFields()
+		case "left", "right":
+			if ed.curField().kind == fkType {
+				ed.cycleType()
+				return false, "", nil
+			}
 		default:
-			s.fields[s.fieldSel], _ = s.fields[s.fieldSel].Update(msg)
+			if ed.curField().kind != fkType {
+				ed.fields[ed.fieldIdx].ti, _ = ed.fields[ed.fieldIdx].ti.Update(m)
+			}
 		}
-	case settingsZoneButtons:
+	case zoneModels:
+		if ed.editing {
+			switch k {
+			case "esc":
+				ed.editing = false
+			case "enter":
+				ed.commitModelEdit()
+				ed.editing = false
+			default:
+				ed.modelEdit, _ = ed.modelEdit.Update(m)
+			}
+			return false, "", nil
+		}
 		switch k {
 		case "esc":
-			s.zone = settingsZoneFields
-			s.fieldSel = len(s.fields) - 1
-			s.focusField()
-		case "left":
-			s.btnSel = (s.btnSel - 1 + len(settingsButtons)) % len(settingsButtons)
-		case "right", "tab":
-			s.btnSel = (s.btnSel + 1) % len(settingsButtons)
+			s.backToPicker(a)
+			return false, "", nil
+		case "up", "k":
+			ed.modelSel = (ed.modelSel - 1 + len(ed.models)) % len(ed.models)
+		case "down", "j", "tab":
+			ed.modelSel = (ed.modelSel + 1) % len(ed.models)
 		case "enter", " ":
-			return s.activate("btn:"+settingsButtons[s.btnSel].action, a)
+			ed.defModel = ed.models[ed.modelSel]
+		case "e":
+			ed.modelEdit.SetValue(ed.models[ed.modelSel])
+			ed.editing = true
+		case "a":
+			ed.models = append(ed.models, "")
+			ed.modelSel = len(ed.models) - 1
+			ed.modelEdit.SetValue("")
+			ed.editing = true
+		case "d":
+			if len(ed.models) > 1 {
+				ed.models = append(ed.models[:ed.modelSel], ed.models[ed.modelSel+1:]...)
+				ed.modelSel = clamp(ed.modelSel, 0, len(ed.models)-1)
+				if ed.defModel != "" {
+					found := false
+					for _, m := range ed.models {
+						if m == ed.defModel {
+							found = true
+							break
+						}
+					}
+					if !found {
+						ed.defModel = ed.models[0]
+					}
+				}
+			}
+		case "shift+tab":
+			ed.zone = zoneFields
+			ed.fieldIdx = len(ed.fields) - 1
+			ed.focusField()
+			return false, "", ed.fields[ed.fieldIdx].ti.Focus()
+		}
+	case zoneButtons:
+		btns := providerButtons(ed.isNew)
+		switch k {
+		case "esc":
+			s.backToPicker(a)
+			return false, "", nil
+		case "left", "shift+tab":
+			ed.btnSel = (ed.btnSel - 1 + len(btns)) % len(btns)
+		case "right", "tab":
+			ed.btnSel = (ed.btnSel + 1) % len(btns)
+		case "enter", " ":
+			return s.runButton(btns[ed.btnSel].action, a)
 		}
 	}
 	return false, "", nil
 }
 
-// activate runs a click/select action (provider chip, field row, or button).
-func (s *modelSettings) activate(action string, a *app) (bool, string, tea.Cmd) {
-	switch {
-	case strings.HasPrefix(action, "prov:"):
-		var idx int
-		fmt.Sscanf(action, "prov:%d", &idx)
-		if idx >= 0 && idx < len(s.providers) {
-			s.provSel = idx
-			s.loadFields()
-		}
-	case strings.HasPrefix(action, "field:"):
-		var idx int
-		fmt.Sscanf(action, "field:%d", &idx)
-		if idx >= 0 && idx < len(s.fields) {
-			s.zone = settingsZoneFields
-			s.fieldSel = idx
-			s.focusField()
-			return false, "", s.fields[idx].Focus()
-		}
-	case action == "add":
-		s.addProvider()
-	case strings.HasPrefix(action, "btn:"):
-		return s.runButton(strings.TrimPrefix(action, "btn:"), a)
+// curField returns the field currently focused in the editor.
+func (ed *providerEditor) curField() fieldDef { return ed.fields[ed.fieldIdx] }
+
+func (ed *providerEditor) commitModelEdit() {
+	v := strings.TrimSpace(ed.modelEdit.Value())
+	ed.models[ed.modelSel] = v
+	if ed.defModel == "" && v != "" {
+		ed.defModel = v
 	}
-	return false, "", nil
 }
 
-func (s *modelSettings) runButton(name string, a *app) (bool, string, tea.Cmd) {
-	switch name {
+func (s *providerSettings) runButton(action string, a *app) (bool, string, tea.Cmd) {
+	switch action {
 	case "save-use":
 		return s.save(a, true)
 	case "save":
 		return s.save(a, false)
-	case "reset":
-		s.loadFields()
-		s.err = ""
-		s.notice = "changes discarded — fields reloaded"
+	case "create":
+		return s.save(a, true)
+	case "delete":
+		id := s.ed.prov.ID
+		if err := a.engine.DeleteProvider(id); err != nil {
+			s.err = err.Error()
+			return false, "", nil
+		}
+		s.notice = "provider " + id + " deleted"
+		s.backToPicker(a)
+		return false, "", nil
 	case "cancel":
-		return s.cancel(a)
+		s.backToPicker(a)
+		return false, "", nil
 	}
 	return false, "", nil
 }
@@ -282,185 +467,330 @@ func (s *modelSettings) runButton(name string, a *app) (bool, string, tea.Cmd) {
 // save persists the edited provider (and optionally activates it). Empty
 // fields keep their current values so a masked key field is safe to leave
 // untouched.
-func (s *modelSettings) save(a *app, use bool) (bool, string, tea.Cmd) {
-	if len(s.providers) == 0 {
-		s.err = "no provider selected — add one first"
+func (s *providerSettings) save(a *app, use bool) (bool, string, tea.Cmd) {
+	ed := &s.ed
+	id := ed.prov.ID
+	if ed.isNew {
+		id = ed.fieldVal(fkID)
+	}
+	if id == "" {
+		s.err = "provider id is required"
 		return false, "", nil
 	}
-	p := s.providers[s.provSel]
-	url := strings.TrimSpace(s.fields[0].Value())
-	key := strings.TrimSpace(s.fields[1].Value())
-	model := strings.TrimSpace(s.fields[2].Value())
-	if err := a.engine.UpdateProvider(p.ID, url, key, model); err != nil {
+	name := ed.fieldVal(fkName)
+	if name == "" {
+		name = id
+	}
+	baseURL := ed.fieldVal(fkBaseURL)
+	apiKey := ed.fieldVal(fkAPIKey)
+	models := nonempty(ed.models)
+	def := ed.defModel
+	if def == "" && len(models) > 0 {
+		def = models[0]
+	}
+
+	cfg := engine.ProviderConfig{
+		ID:        id,
+		Type:      ed.prov.Type,
+		Name:      name,
+		BaseURL:   baseURL,
+		APIKey:    apiKey, // empty => engine keeps the stored key
+		APIKeyEnv: ed.prov.APIKeyEnv,
+		Models:    models,
+	}
+	if err := a.engine.UpsertProvider(cfg); err != nil {
 		s.err = err.Error()
 		return false, "", nil
 	}
-	if use && model != "" {
-		if err := a.engine.SwitchModel(p.ID, model); err != nil {
-			s.err = "saved, but could not switch: " + err.Error()
+	if use {
+		if err := a.engine.SwitchModel(id, def); err != nil {
+			s.err = "saved, but could not activate: " + err.Error()
 			return false, "", nil
 		}
 	}
-	msg := "provider " + p.ID + " updated"
-	if url != "" {
-		msg += " · url=" + url
-	}
-	if key != "" {
+	msg := "provider " + id + " saved"
+	if apiKey != "" {
 		msg += " · api key saved"
 	}
-	if model != "" {
-		msg += " · model=" + model
+	if baseURL != "" {
+		msg += " · url=" + baseURL
 	}
-	if use && model != "" {
-		msg += " (now active)"
+	if use {
+		msg += " · now active (" + def + ")"
 	}
 	return true, msg, nil
 }
 
-// cancel closes the form and rolls back any provider added this session
-// (added providers are only in memory until saved).
-func (s *modelSettings) cancel(a *app) (bool, string, tea.Cmd) {
-	if len(s.eng.Config.Providers) > s.origCount {
-		s.eng.Config.Providers = s.eng.Config.Providers[:s.origCount]
+func nonempty(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
 	}
-	return true, "", nil
+	return out
 }
 
-// addProvider appends a fresh openai-compatible provider (in memory; it is
-// persisted when the user hits Save) and jumps into its fields.
-func (s *modelSettings) addProvider() {
-	cfg := s.eng.Config
-	n := 1
-	id := ""
-	for {
-		id = fmt.Sprintf("custom%d", n)
-		exists := false
-		for _, p := range cfg.Providers {
-			if p.ID == id {
-				exists = true
-				break
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// activate routes a click/select action.
+func (s *providerSettings) activate(action string, a *app) (bool, string, tea.Cmd) {
+	switch {
+	case strings.HasPrefix(action, "pick:"):
+		if action == "pick:custom" {
+			s.openCustom(a)
+		} else {
+			var idx int
+			fmt.Sscanf(action, "pick:%d", &idx)
+			if idx >= 0 && idx < len(s.eng.Config.Providers) {
+				s.pickSel = idx
+				s.openEditor(a, s.eng.Config.Providers[idx], false)
 			}
 		}
-		if !exists {
-			break
+	case strings.HasPrefix(action, "field:"):
+		var idx int
+		fmt.Sscanf(action, "field:%d", &idx)
+		if idx >= 0 && idx < len(s.ed.fields) {
+			s.ed.zone = zoneFields
+			s.ed.fieldIdx = idx
+			s.ed.focusField()
+			return false, "", s.ed.fields[idx].ti.Focus()
 		}
-		n++
+	case strings.HasPrefix(action, "model:"):
+		var idx int
+		fmt.Sscanf(action, "model:%d", &idx)
+		if idx >= 0 && idx < len(s.ed.models) {
+			s.ed.zone = zoneModels
+			s.ed.modelSel = idx
+		}
+	case strings.HasPrefix(action, "btn:"):
+		return s.runButton(strings.TrimPrefix(action, "btn:"), a)
 	}
-	cfg.Providers = append(cfg.Providers, engine.ProviderConfig{
-		ID:   id,
-		Type: "openai-compatible",
-		Name: "Custom " + fmt.Sprintf("%d", n),
-	})
-	s.providers = cfg.Providers
-	s.provSel = len(cfg.Providers) - 1
-	s.loadFields()
-	s.zone = settingsZoneFields
-	s.fieldSel = 0
-	s.focusField()
-	s.err = ""
-	s.notice = "new provider " + id + " added — fill in URL / key / model, then Save"
+	return false, "", nil
 }
 
-// View renders the centered settings card and refreshes the clickable rects.
-func (s *modelSettings) View(width, height int) string {
+// View renders the centered card (picker or editor) and refreshes click rects.
+func (s *providerSettings) View(width, height int) string {
 	pal := activePalette()
 	boxW := width - 8
-	if boxW > 100 {
-		boxW = 100
+	if boxW > 96 {
+		boxW = 96
 	}
 	if boxW < 50 {
 		boxW = 50
 	}
 	contentW := boxW - 6
-	inputW := contentW - 20
-	if inputW < 20 {
-		inputW = 20
-	}
-	for i := range s.fields {
-		s.fields[i].Width = inputW
-	}
 
 	var lines []string
 	var rects []settingsRect
 
-	lines = append(lines, styleTitle.Render("◆ Model Settings")+"  "+styleDim.Render("base URL · API key · model ID"))
+	if s.view == pvPicker {
+		lines, rects = s.viewPicker(contentW, pal)
+	} else {
+		lines, rects = s.viewEditor(contentW, pal)
+	}
+
+	content := strings.Join(lines, "\n")
+	box := styleOverlay.Width(boxW).Render(content)
+	boxH := lipgloss.Height(box)
+	x0 := (width - boxW) / 2
+	y0 := (height - boxH) / 2
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	s.rects = s.rects[:0]
+	for _, r := range rects {
+		r.x = x0 + 3 + r.x
+		r.y = y0 + 2 + r.y
+		s.rects = append(s.rects, r)
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// viewPicker renders the Provider Picker grid.
+func (s *providerSettings) viewPicker(contentW int, pal themePalette) ([]string, []settingsRect) {
+	var lines []string
+	var rects []settingsRect
+	lines = append(lines, styleTitle.Render("◆ Providers")+"  "+styleDim.Render("pick a provider to connect or edit · a to add custom"))
 	lines = append(lines, "")
 
-	// Provider chips (clickable, keyboard selectable).
-	lines = append(lines, styleDim.Render("Providers"))
-	chipLine := ""
-	chipX := 0
+	cardW := contentW - 2
+	if cardW < 20 {
+		cardW = 20
+	}
 	row := len(lines)
-	for i, p := range s.providers {
-		label := p.ID
-		if p.ID == s.eng.ProviderID() {
-			label = "● " + label
-		}
-		chip := " " + label + " "
-		var st lipgloss.Style
-		if i == s.provSel {
-			st = lipgloss.NewStyle().Background(pal.Accent).Foreground(pal.Bg0).Bold(true)
-		} else {
-			st = lipgloss.NewStyle().Foreground(pal.WhiteDim)
-		}
-		rendered := st.Render(chip)
-		w := lipgloss.Width(rendered)
-		if chipX > 0 && chipX+w+2 > contentW {
-			lines = append(lines, chipLine)
-			row = len(lines)
-			chipLine = ""
-			chipX = 0
-		}
-		rects = append(rects, settingsRect{x: chipX, y: row, w: w, h: 1, action: fmt.Sprintf("prov:%d", i)})
-		chipLine += rendered + "  "
-		chipX += w + 2
-	}
-	addChip := " + add provider "
-	rendered := lipgloss.NewStyle().Foreground(pal.Accent).Render(addChip)
-	w := lipgloss.Width(rendered)
-	if chipX > 0 && chipX+w+2 > contentW {
-		lines = append(lines, chipLine)
+	count := len(s.eng.Config.Providers)
+	for i, p := range s.eng.Config.Providers {
+		selected := i == s.pickSel
+		active := p.ID == s.eng.ProviderID()
+		conf := providerConfigured(p)
+		lines, rects = renderProviderCard(lines, rects, i, row, cardW, selected, active, conf, p.ID, p.Name, p.Type, len(p.Models), pal)
 		row = len(lines)
-		chipLine = ""
-		chipX = 0
 	}
-	rects = append(rects, settingsRect{x: chipX, y: row, w: w, h: 1, action: "add"})
-	chipLine += rendered
-	lines = append(lines, chipLine)
+	// "+ Custom provider" card.
+	selected := s.pickSel == count
+	lines, rects = renderCustomCard(lines, rects, row, cardW, selected, pal)
+	row = len(lines)
+
+	lines = append(lines, "")
+	lines = append(lines, styleDim.Render("↑↓ choose · ⏎ open · a add custom · 1-9 jump · esc close"))
+	return lines, rects
+}
+
+func renderProviderCard(lines []string, rects []settingsRect, idx, row, cardW int, selected, active, conf bool, id, name, ptype string, nModels int, pal themePalette) ([]string, []settingsRect) {
+	if name == "" {
+		name = id
+	}
+	statusDot := "○"
+	statusText := "not configured"
+	if active {
+		statusDot = "●"
+		statusText = "active"
+	} else if conf {
+		statusDot = "●"
+		statusText = "configured"
+	}
+	title := styleEmph.Render(name) + "  " + styleDim.Render("("+id+")")
+	meta := styleDim.Render(ptype) + "  ·  " + fmt.Sprintf("%d models", nModels)
+	inner := lipgloss.JoinHorizontal(lipgloss.Top, title, "  ", statusLine(statusDot, statusText, active, pal))
+	body := lipgloss.JoinVertical(lipgloss.Left, inner, meta)
+	st := styleCard
+	if selected {
+		st = styleCardSel
+	}
+	card := st.Width(cardW).Render(body)
+	rects = append(rects, settingsRect{x: 0, y: row, w: cardW + 2, h: lipgloss.Height(card), action: fmt.Sprintf("pick:%d", idx)})
+	lines = append(lines, card)
+	return lines, rects
+}
+
+func statusLine(dot, text string, active bool, pal themePalette) string {
+	c := pal.WhiteDim
+	if active {
+		c = pal.Accent
+	} else if text == "configured" {
+		c = pal.Green
+	}
+	return lipgloss.NewStyle().Foreground(c).Render(dot + " " + text)
+}
+
+func renderCustomCard(lines []string, rects []settingsRect, row, cardW int, selected bool, pal themePalette) ([]string, []settingsRect) {
+	body := styleKey.Render("+  Add a custom provider")
+	st := styleCard
+	if selected {
+		st = styleCardSel
+	}
+	card := st.Width(cardW).Render(body)
+	rects = append(rects, settingsRect{x: 0, y: row, w: cardW + 2, h: lipgloss.Height(card), action: "pick:custom"})
+	lines = append(lines, card)
+	return lines, rects
+}
+
+// viewEditor renders the Connect / Edit / Custom form.
+func (s *providerSettings) viewEditor(contentW int, pal themePalette) ([]string, []settingsRect) {
+	ed := &s.ed
+	var lines []string
+	var rects []settingsRect
+
+	title := "◆ Connect Provider"
+	if ed.isNew {
+		title = "◆ New Provider"
+	} else if ed.isCustom {
+		title = "◆ Edit Provider"
+	}
+	lines = append(lines, styleTitle.Render(title)+"  "+styleDim.Render(ed.prov.ID))
 	lines = append(lines, "")
 
-	// Labeled text fields.
-	labels := []string{"Base URL", "API Key", "Model ID"}
-	for i, name := range labels {
-		focused := s.zone == settingsZoneFields && s.fieldSel == i
-		var label string
+	// Identity / connection fields.
+	fieldLabels := map[fieldKind]string{
+		fkID: "Provider ID", fkName: "Name", fkType: "Type",
+		fkBaseURL: "Base URL", fkAPIKey: "API Key",
+	}
+	inputW := contentW - 16
+	if inputW < 16 {
+		inputW = 16
+	}
+	for i := range ed.fields {
+		ed.fields[i].ti.Width = inputW
+	}
+	for i, f := range ed.fields {
+		focused := ed.zone == zoneFields && ed.fieldIdx == i
+		label := fieldLabels[f.kind]
+		prefix := "  "
 		if focused {
-			label = styleKey.Render("› " + padRight(name, 8))
-		} else {
-			label = styleDim.Render("  " + padRight(name, 8))
+			prefix = "› "
 		}
-		// Single-line input box: left/right border only, so each field stays
-		// one row tall and the click rect stays aligned.
+		lab := styleDim.Render(prefix + padRight(label, 11))
 		box := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, true, false, true).Padding(0, 1)
 		if focused {
 			box = box.BorderForeground(pal.Accent)
 		} else {
 			box = box.BorderForeground(pal.GrayLo)
 		}
-		lines = append(lines, label+" "+box.Render(s.fields[i].View()))
-		rects = append(rects, settingsRect{x: 10, y: len(lines) - 1, w: contentW - 12, h: 1, action: fmt.Sprintf("field:%d", i)})
+		value := f.ti.View()
+		if f.kind == fkType {
+			value = value + styleDim.Render("  ◀▶ toggle")
+		}
+		lines = append(lines, lab+" "+box.Render(value))
+		rects = append(rects, settingsRect{x: 13, y: len(lines) - 1, w: contentW - 15, h: 1, action: fmt.Sprintf("field:%d", i)})
 	}
 	lines = append(lines, "")
 
+	// Models editor.
+	lines = append(lines, styleDim.Render("Models"))
+	for i, m := range ed.models {
+		sel := ed.zone == zoneModels && ed.modelSel == i
+		defMark := "  "
+		if m == ed.defModel {
+			defMark = "◆ "
+		}
+		prefix := "  "
+		if sel {
+			prefix = "› "
+		}
+		display := m
+		if ed.editing && sel {
+			display = ed.modelEdit.View()
+		}
+		if display == "" {
+			display = styleDim.Render("(empty — type a model id)")
+		}
+		lab := styleDim.Render(prefix + defMark)
+		box := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, true, false, true).Padding(0, 1)
+		if sel {
+			box = box.BorderForeground(pal.Accent)
+			if ed.editing {
+				box = box.BorderForeground(pal.Green)
+			}
+		} else {
+			box = box.BorderForeground(pal.GrayLo)
+		}
+		lines = append(lines, lab+" "+box.Render(display))
+		rects = append(rects, settingsRect{x: 5, y: len(lines) - 1, w: contentW - 7, h: 1, action: fmt.Sprintf("model:%d", i)})
+	}
+	lines = append(lines, styleDim.Render("  enter set default · e edit · a add · d delete"))
+	lines = append(lines, "")
+
 	// Action buttons.
+	btns := providerButtons(ed.isNew)
 	btnLine := ""
 	btnX := 0
-	row = len(lines)
-	for i, b := range settingsButtons {
+	row := len(lines)
+	for i, b := range btns {
 		chip := " " + b.label + " "
 		var st lipgloss.Style
-		if s.zone == settingsZoneButtons && s.btnSel == i {
-			// Selected button: solid orange block (matches the provider chip).
+		if ed.zone == zoneButtons && ed.btnSel == i {
 			st = lipgloss.NewStyle().Background(pal.Accent).Foreground(pal.Bg0).Bold(true).Padding(0, 1)
 			chip = "›" + chip
 		} else {
@@ -481,34 +811,12 @@ func (s *modelSettings) View(width, height int) string {
 	lines = append(lines, btnLine)
 	lines = append(lines, "")
 
-	// Status line.
 	if s.err != "" {
-		lines = append(lines, styleError.Render("✗ "+s.err))
+		lines = append(lines, styleError.Render("✗ " + s.err))
 	} else if s.notice != "" {
-		lines = append(lines, styleOk.Render("• "+s.notice))
+		lines = append(lines, styleOk.Render("• " + s.notice))
 	} else {
-		lines = append(lines, styleDim.Render("URL, key and model are saved to .astra/config.json · empty fields keep current values"))
+		lines = append(lines, styleDim.Render("changes saved to .astra/config.json · esc back to providers"))
 	}
-	lines = append(lines, styleDim.Render("↑↓ choose · tab / ⏎ next · esc back · mouse click · Save & Use activates"))
-
-	content := strings.Join(lines, "\n")
-	box := styleOverlay.Width(boxW).Render(content)
-	boxH := lipgloss.Height(box)
-	x0 := (width - boxW) / 2
-	y0 := (height - boxH) / 2
-	if x0 < 0 {
-		x0 = 0
-	}
-	if y0 < 0 {
-		y0 = 0
-	}
-	// Convert content-relative rects to screen coords: border 1 + padding 2
-	// on the left, border 1 + padding 1 on the top.
-	s.rects = s.rects[:0]
-	for _, r := range rects {
-		r.x = x0 + 3 + r.x
-		r.y = y0 + 2 + r.y
-		s.rects = append(s.rects, r)
-	}
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+	return lines, rects
 }

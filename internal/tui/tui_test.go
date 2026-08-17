@@ -190,21 +190,25 @@ func TestThemeSwitch(t *testing.T) {
 	}
 }
 
-func TestModelSettingsForm(t *testing.T) {
+func TestProviderSettingsForm(t *testing.T) {
 	a := newTestApp(t)
-	s := newModelSettings(a)
-	if s.zone != settingsZoneFields {
-		t.Fatalf("single provider should start in the fields zone, got %v", s.zone)
+	s := newProviderSettings(a)
+	if s.view != pvPicker {
+		t.Fatalf("should start on the picker, got %v", s.view)
 	}
-	if got := s.fields[0].Value(); got != "https://example.invalid/v1" {
-		t.Fatalf("url field = %q", got)
+
+	// Open the editor for the single test provider.
+	s.openEditor(a, a.engine.Config.Providers[0], false)
+	ed := &s.ed
+	if got := ed.fields[1].ti.Value(); got != "https://example.invalid/v1" {
+		t.Fatalf("base url field = %q", got)
 	}
-	if got := s.fields[2].Value(); got != "test-model" {
-		t.Fatalf("model field = %q", got)
+	if ed.defModel != "test-model" {
+		t.Fatalf("default model = %q", ed.defModel)
 	}
 
 	// Editing + Save persists through the engine.
-	s.fields[0].SetValue("https://new.example/v1")
+	ed.fields[1].ti.SetValue("https://new.example/v1")
 	done, msg, _ := s.runButton("save", a)
 	if !done {
 		t.Fatalf("save should close the form, err=%q", s.err)
@@ -217,53 +221,103 @@ func TestModelSettingsForm(t *testing.T) {
 	}
 
 	// Save & Use activates the model.
-	s3 := newModelSettings(a)
-	done, _, _ = s3.runButton("save-use", a)
-	if !done || s3.err != "" {
-		t.Fatalf("save-use should succeed, err=%q", s3.err)
+	s2 := newProviderSettings(a)
+	s2.openEditor(a, a.engine.Config.Providers[0], false)
+	done, _, _ = s2.runButton("save-use", a)
+	if !done || s2.err != "" {
+		t.Fatalf("save-use should succeed, err=%q", s2.err)
 	}
 	if a.engine.Model != "test-model" {
 		t.Fatalf("engine model = %q", a.engine.Model)
 	}
 
-	// Add provider → cancel rolls the in-memory provider back out.
-	s2 := newModelSettings(a)
-	orig := len(s2.providers)
-	s2.addProvider()
-	if len(s2.providers) != orig+1 {
-		t.Fatalf("addProvider should append one provider, got %d", len(s2.providers))
+	// Add a custom provider → Save persists it; Delete rolls it back.
+	s3 := newProviderSettings(a)
+	s3.openCustom(a)
+	if !s3.ed.isNew {
+		t.Fatal("custom form should be marked isNew")
 	}
-	if len(a.engine.Config.Providers) != orig+1 {
-		t.Fatalf("engine config should carry the in-memory provider")
-	}
-	done, _, _ = s2.cancel(a)
+	s3.ed.fields[0].ti.SetValue("mycustom") // ID
+	s3.ed.fields[1].ti.SetValue("My Custom") // Name
+	s3.ed.fields[3].ti.SetValue("https://custom.example/v1") // BaseURL
+	done, _, _ = s3.runButton("save", a)
 	if !done {
-		t.Fatal("cancel should close")
+		t.Fatalf("save custom should close, err=%q", s3.err)
 	}
-	if len(a.engine.Config.Providers) != orig {
-		t.Fatalf("cancel should roll back the added provider, got %d", len(a.engine.Config.Providers))
+	if len(a.engine.Config.Providers) != 2 {
+		t.Fatalf("should have 2 providers, got %d", len(a.engine.Config.Providers))
+	}
+	s4 := newProviderSettings(a)
+	s4.openEditor(a, a.engine.Config.Providers[1], false)
+	_, _, _ = s4.runButton("delete", a)
+	if s4.view != pvPicker {
+		t.Fatalf("delete should return to the picker, view=%v", s4.view)
+	}
+	if len(a.engine.Config.Providers) != 1 {
+		t.Fatalf("delete should remove the provider, got %d", len(a.engine.Config.Providers))
 	}
 }
 
-func TestModelSettingsKeys(t *testing.T) {
+func TestProviderSettingsKeys(t *testing.T) {
 	a := newTestApp(t)
-	s := newModelSettings(a)
-	// Tab walks URL → key → model → buttons, esc walks back.
+	s := newProviderSettings(a)
+
+	// Picker navigation.
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyDown}, a)
+	if s.pickSel != 1 {
+		t.Fatalf("down should move to the custom card, pickSel=%d", s.pickSel)
+	}
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyUp}, a)
+	if s.pickSel != 0 {
+		t.Fatalf("up should move back, pickSel=%d", s.pickSel)
+	}
+
+	// Editor: Tab walks Name → BaseURL → APIKey → Models, esc returns to picker.
+	s.openEditor(a, a.engine.Config.Providers[0], false)
 	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
-	if s.zone != settingsZoneFields || s.fieldSel != 1 {
-		t.Fatalf("tab should move to the key field, got zone=%v field=%d", s.zone, s.fieldSel)
+	if s.ed.zone != zoneFields || s.ed.fieldIdx != 1 {
+		t.Fatalf("tab should move to base url, got zone=%v field=%d", s.ed.zone, s.ed.fieldIdx)
 	}
 	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
-	if s.zone != settingsZoneFields || s.fieldSel != 2 {
-		t.Fatalf("tab should move to the model field, got zone=%v field=%d", s.zone, s.fieldSel)
+	if s.ed.zone != zoneFields || s.ed.fieldIdx != 2 {
+		t.Fatalf("tab should move to api key, got zone=%v field=%d", s.ed.zone, s.ed.fieldIdx)
 	}
 	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyTab}, a)
-	if s.zone != settingsZoneButtons {
-		t.Fatalf("tab after the last field should move to buttons, got zone=%v", s.zone)
+	if s.ed.zone != zoneModels {
+		t.Fatalf("tab after last field should enter models, got zone=%v", s.ed.zone)
 	}
 	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyEsc}, a)
-	if s.zone != settingsZoneFields {
-		t.Fatalf("esc should return to the fields zone, got zone=%v", s.zone)
+	if s.view != pvPicker {
+		t.Fatalf("esc should return to the picker, got view=%v", s.view)
+	}
+
+	// Custom form: Type field cycles with left/right.
+	s.openCustom(a)
+	s.ed.fieldIdx = 2 // Type field (ID, Name, Type, BaseURL, APIKey)
+	before := s.ed.prov.Type
+	_, _, _ = s.handleKey(tea.KeyMsg{Type: tea.KeyRight}, a)
+	if s.ed.prov.Type == before {
+		t.Fatalf("type should cycle on left/right, got %q", s.ed.prov.Type)
+	}
+}
+
+func TestProviderSettingsView(t *testing.T) {
+	a := newTestApp(t)
+	s := newProviderSettings(a)
+	// Picker view must render without panicking.
+	if out := s.View(120, 36); out == "" {
+		t.Fatal("picker view rendered empty")
+	}
+	// Editor view (existing provider) must render.
+	s.openEditor(a, a.engine.Config.Providers[0], false)
+	if out := s.View(120, 36); out == "" {
+		t.Fatal("editor view rendered empty")
+	}
+	// Custom form must render, including the type field and model rows.
+	s.openCustom(a)
+	s.ed.fields[0].ti.SetValue("acme")
+	if out := s.View(120, 36); out == "" {
+		t.Fatal("custom form view rendered empty")
 	}
 }
 

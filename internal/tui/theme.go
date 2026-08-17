@@ -276,6 +276,8 @@ var (
 	styleComposerPlan    lipgloss.Style
 	styleOverlay         lipgloss.Style
 	stylePanel           lipgloss.Style
+	styleCard            lipgloss.Style // opencode-like surface card (idle)
+	styleCardSel         lipgloss.Style // opencode-like surface card (selected)
 	styleCodeBlock       lipgloss.Style
 	styleQuote           lipgloss.Style
 	styleDiffHunk        lipgloss.Style
@@ -382,6 +384,19 @@ func rebuildStylesLocked() {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.GrayLo).
 		Padding(1, 2)
+	// opencode-flavored surface cards: subtle filled panel with a hairline
+	// border; the selected variant borrows the accent border + fill so lists
+	// of cards read as a coherent picker (Provider Picker, etc.).
+	styleCard = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.GrayLo).
+		Background(pal.Bg1).
+		Padding(0, 1)
+	styleCardSel = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.Accent).
+		Background(pal.Bg2).
+		Padding(0, 1)
 	stylePanel = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.GrayLo).
