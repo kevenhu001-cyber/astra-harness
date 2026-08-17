@@ -111,7 +111,9 @@ func NewEngineWithProgress(root string, cfg *Config, progress func(done, total i
 	e := &Engine{
 		Root: root, Config: cfg, Store: st, Index: ix, Git: g, Router: router,
 		Provider: provider, Model: model,
-		Events:    make(chan Event, 256),
+		// Keep enough room for normal streaming bursts, while emit() still
+		// preserves terminal events when a renderer is temporarily busy.
+		Events:    make(chan Event, 1024),
 		askChans:  map[string]chan string{},
 		permChans: map[string]chan PermissionDecision{},
 	}
@@ -1229,9 +1231,30 @@ func (e *Engine) emit(t EventType, data any) {
 	if e.Events == nil {
 		return
 	}
+	ev := Event{Type: t, Data: data, Time: time.Now()}
+	if terminalEvent(t) {
+		// Dropping EvDone/EvPermission/EvAskUser is indistinguishable from a
+		// frozen UI: the engine keeps waiting or the composer stays busy. These
+		// state transitions must be delivered even when a large tool output
+		// burst temporarily fills the queue.
+		e.Events <- ev
+		return
+	}
+	// Deltas are best-effort. Losing an intermediate frame is harmless and
+	// prevents a chatty process from back-pressuring the agent forever.
 	select {
-	case e.Events <- Event{Type: t, Data: data, Time: time.Now()}:
+	case e.Events <- ev:
 	default:
+	}
+}
+
+func terminalEvent(t EventType) bool {
+	switch t {
+	case EvAssistantStart, EvAssistantEnd, EvToolStart, EvToolEnd,
+		EvPermission, EvAskUser, EvError, EvDone:
+		return true
+	default:
+		return false
 	}
 }
 

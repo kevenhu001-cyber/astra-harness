@@ -344,6 +344,24 @@ func codexUserShellCell(cmd, output string, ok bool, width int) string {
 	return header + "\n" + body
 }
 
+// readToolPath extracts the path shown by the read tool from its JSON args.
+func readToolPath(args string) string {
+	return argStringFromJSON(args, "path", "file")
+}
+
+// codexReadCell renders a read result as a scrollable code cell instead of a
+// generic five-line tool summary. The viewport owns the full preview; the
+// user can use ↑/↓, PageUp/PageDown, Home/End, or the mouse wheel to inspect
+// long files without opening a separate overlay.
+func codexReadCell(width int, ok bool, args, output string, maxLines int) string {
+	header := codexExecHeader(false, ok, "read", args)
+	preview := renderReadPreview(output, readToolPath(args), maxLines)
+	if preview == "" {
+		preview = codexOutputBlock(output, maxLines, width)
+	}
+	return header + "\n" + preview
+}
+
 // codexTranscriptCell renders the transcript-overlay / export form of a
 // shell command:
 //

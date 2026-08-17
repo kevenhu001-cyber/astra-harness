@@ -1,6 +1,9 @@
 package tui
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // renderDiff formats text as a unified diff with Astra styling.
 //
@@ -88,17 +91,61 @@ func detectDiff(output string) (filename string, diff string, ok bool) {
 
 // renderFilePreview renders a code snippet with chroma + line numbers.
 func renderFilePreview(src, filename string) string {
+	return renderNumberedCode(src, filename, 1)
+}
+
+// renderReadPreview turns the line-numbered output of the read tool back into
+// a syntax-highlighted code block. maxLines limits only the rendered card;
+// passing zero keeps every line returned by the engine in the scrollable
+// viewport.
+func renderReadPreview(output, filename string, maxLines int) string {
+	output = strings.TrimRight(output, "\n")
+	if output == "" {
+		return ""
+	}
+	var source strings.Builder
+	startLine := 1
+	shown := 0
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "...[truncated]") {
+			break
+		}
+		sep := strings.Index(line, " │ ")
+		code := line
+		if sep >= 0 {
+			if n, err := strconv.Atoi(strings.TrimSpace(line[:sep])); err == nil {
+				if shown == 0 {
+					startLine = n
+				}
+			}
+			code = line[sep+len(" │ "):]
+		}
+		if maxLines > 0 && shown >= maxLines {
+			break
+		}
+		if shown > 0 {
+			source.WriteByte('\n')
+		}
+		source.WriteString(code)
+		shown++
+	}
+	if shown == 0 {
+		return ""
+	}
+	return renderNumberedCode(source.String(), filename, startLine)
+}
+
+func renderNumberedCode(src, filename string, startLine int) string {
 	lang := detectLang(filename, "")
 	highlighted := highlightCode(src, lang, filename)
-	lines := strings.Split(highlighted, "\n")
+	lines := strings.Split(strings.TrimRight(highlighted, "\n"), "\n")
 	var b strings.Builder
 	for i, l := range lines {
-		ln := styleCodeLineNum.Render(padLeft(i+1, 4) + " │ ")
+		lineNo := startLine + i
+		ln := styleCodeLineNum.Render(padLeft(lineNo, 4) + " │ ")
 		b.WriteString(ln)
 		b.WriteString(l)
-		if !strings.HasSuffix(l, "\n") {
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
 	}
 	return styleCodeBlock.Render(b.String())
 }

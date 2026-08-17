@@ -52,6 +52,7 @@ type streamingMsg struct {
 
 type engineEventMsg struct {
 	ev engine.Event
+	ok bool
 }
 
 type indexDoneMsg struct {
@@ -276,7 +277,8 @@ func (a *app) animNeeded() bool {
 }
 
 func (a *app) waitEvent() tea.Msg {
-	return engineEventMsg{ev: <-a.events}
+	ev, ok := <-a.events
+	return engineEventMsg{ev: ev, ok: ok}
 }
 
 // refreshFileCandidates rebuilds the @ autocomplete list from the index.
@@ -337,6 +339,16 @@ func (a *app) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case engineEventMsg:
+		if !m.ok {
+			// A closed event stream must not be re-armed forever: receiving
+			// the zero Event in a tight loop makes Bubble Tea look frozen and
+			// leaves the composer in a permanent busy state.
+			a.busy = false
+			a.streaming = nil
+			a.status = "event stream closed"
+			a.addError("agent event stream closed")
+			return a, a.syncTitle()
+		}
 		// waitEvent is a one-shot blocking read: it must be re-armed after
 		// every engine event, otherwise the TUI stops draining the engine
 		// channel after the first event and the UI hangs in "busy" forever
@@ -443,9 +455,9 @@ func (a *app) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// sidebar footprint route into the sidebar's click handler.
 		switch m.Type {
 		case tea.MouseWheelUp:
-			a.vp.LineUp(1)
+			a.vp.LineUp(3)
 		case tea.MouseWheelDown:
-			a.vp.LineDown(1)
+			a.vp.LineDown(3)
 		case tea.MouseLeft:
 			if it, mode := a.sidebar.HitAt(m.X, m.Y); mode != nil {
 				a.sidebar.mode = *mode
@@ -852,8 +864,34 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return finish(a.planSelection < 2, a.planSelection == 1)
 	}
 
+	// When the composer is empty, the chat owns the vertical navigation keys.
+	// This is deliberately before sidebar routing: opening the sidebar must
+	// not make ↑/↓ stop scrolling a long code/read result in the main pane.
+	if strings.TrimSpace(a.composer.Value()) == "" {
+		switch s {
+		case "up":
+			a.vp.LineUp(3)
+			return a, nil
+		case "down":
+			a.vp.LineDown(3)
+			return a, nil
+		case "pgup":
+			a.vp.LineUp(max(1, a.viewportHeight()-2))
+			return a, nil
+		case "pgdn":
+			a.vp.LineDown(max(1, a.viewportHeight()-2))
+			return a, nil
+		case "home":
+			a.vp.GotoTop()
+			return a, nil
+		case "end":
+			a.vp.GotoBottom()
+			return a, nil
+		}
+	}
+
 	// Sidebar input mode: arrows + enter on the sidebar.
-	if a.sidebar.visible && (s == "j" || s == "k" || s == "up" || s == "down" || s == "tab" || s == "m" || s == "left" || s == "right" || s == "enter") {
+	if a.sidebar.visible && (s == "j" || s == "k" || s == "tab" || s == "m" || s == "left" || s == "right" || s == "enter") {
 		a.sidebar.Update(msg)
 		// Only consume keys when sidebar is "claiming" the input.
 		// Convention: when the composer is empty, sidebar keeps focus.
@@ -2437,7 +2475,7 @@ func (a *app) renderToolStreaming(name, output string) string {
 func (a *app) renderTool(name string, success bool, output string) string {
 	collapsed := false
 	for i := len(a.items) - 1; i >= 0; i-- {
-		if a.items[i].kind == "tool" && a.items[i].status != "running" {
+		if a.items[i].kind == "tool" && a.items[i].meta == name && a.items[i].status != "running" {
 			collapsed = a.items[i].collapsed
 			break
 		}
@@ -2453,6 +2491,12 @@ func (a *app) renderTool(name string, success bool, output string) string {
 			args = a.items[i].args
 			break
 		}
+	}
+	if name == "read" {
+		// Read output is already bounded by the engine's tool output limit;
+		// keep every returned line in the viewport so scrolling can inspect
+		// the complete file range instead of silently hiding it at five lines.
+		return codexReadCell(a.widthAvail()-2, success, args, output, 0)
 	}
 	return codexExecCell(a.widthAvail()-2, false, success, name, args, output, toolMaxLines)
 }

@@ -633,6 +633,54 @@ func TestTabbedOverlayTinyWidthNoPanic(t *testing.T) {
 
 // TestEscPauseRunningAgent verifies that esc while the agent is busy pauses
 // the run (engine stopped) instead of doing nothing.
+func TestVerticalKeysScrollChatWithSidebarOpen(t *testing.T) {
+	a := newTestApp(t)
+	a.sidebar.visible = true
+	_, _ = a.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	a.items = []*chatItem{{kind: "tool", meta: "read", rendered: strings.Repeat("line\n", 200)}}
+	a.refreshViewport()
+	before := a.vp.ScrollPercent()
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyUp})
+	after := a.vp.ScrollPercent()
+	if !(after < before) {
+		t.Fatalf("up should scroll the chat pane even with sidebar open: before=%v after=%v", before, after)
+	}
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if got := a.vp.ScrollPercent(); got < 0.97 {
+		t.Fatalf("end should return to the bottom, got %v", got)
+	}
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if got := a.vp.ScrollPercent(); got > 0.01 {
+		t.Fatalf("home should go to the top, got %v", got)
+	}
+}
+
+func TestClosedEngineEventStreamDoesNotLoop(t *testing.T) {
+	a := newTestApp(t)
+	a.busy = true
+	a.events = make(chan engine.Event)
+	close(a.events)
+	msg, ok := a.waitEvent().(engineEventMsg)
+	if !ok || msg.ok {
+		t.Fatalf("closed event stream should report ok=false: %#v", msg)
+	}
+	_, cmd := a.Update(msg)
+	if cmd == nil || a.busy {
+		t.Fatalf("closed stream should clear busy and return a title command: cmd=%v busy=%v", cmd, a.busy)
+	}
+}
+
+func TestReadToolRendersScrollableCodePreview(t *testing.T) {
+	a := newTestApp(t)
+	_, _ = a.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	a.items = []*chatItem{{kind: "tool", meta: "read", args: `{"path":"internal/example.go","start_line":12,"end_line":14}`}}
+	out := strip(a.renderTool("read", true, "    12 │ package example\n    13 │ func main() {}\n    14 │ // keep reading"))
+	if !strings.Contains(out, "Read internal/example.go") ||
+		!strings.Contains(out, "12 │") || !strings.Contains(out, "14 │") {
+		t.Fatalf("read result should render a numbered code card:\n%s", out)
+	}
+}
+
 func TestEscPauseRunningAgent(t *testing.T) {
 	a := newTestApp(t)
 	a.busy = true
