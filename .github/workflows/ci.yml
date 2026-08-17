@@ -20,7 +20,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.24.x"
+          go-version: "1.25.x"
           cache: true
 
       - name: Format check
@@ -64,7 +64,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.24.x"
+          go-version: "1.25.x"
           cache: true
 
       - name: Build binaries
