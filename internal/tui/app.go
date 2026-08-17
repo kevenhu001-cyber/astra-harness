@@ -132,6 +132,7 @@ type app struct {
 	quitArmedAt         time.Time
 	escArmed            bool
 	escArmedAt          time.Time
+	paused              bool
 	keymapCaptureAction string
 	atBottom            bool
 	toolWorkThisTurn    bool
@@ -143,11 +144,11 @@ type app struct {
 	// lastComposerH is the composer box height at the last layout; when it
 	// changes (the composer grows/shrinks as you type) the viewport is
 	// re-laid-out so the footer is never pushed off-screen.
-	lastComposerH int
-	userEmail           string
-	deviceFlow          *auth.DeviceFlow
-	loginOverlay        *loginOverlay
-	planNudgeDismissed  bool
+	lastComposerH      int
+	userEmail          string
+	deviceFlow         *auth.DeviceFlow
+	loginOverlay       *loginOverlay
+	planNudgeDismissed bool
 }
 
 type askState struct {
@@ -328,7 +329,11 @@ func (a *app) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case engineEventMsg:
-		return a, a.handleEngineEvent(m.ev)
+		// waitEvent is a one-shot blocking read: it must be re-armed after
+		// every engine event, otherwise the TUI stops draining the engine
+		// channel after the first event and the UI hangs in "busy" forever
+		// (streaming deltas, tool output and EvDone never arrive).
+		return a, tea.Batch(a.waitEvent, a.handleEngineEvent(m.ev))
 	case indexDoneMsg:
 		a.busy = false
 		if m.err != nil {
@@ -792,6 +797,17 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.toastUntil = now.Add(3 * time.Second)
 		return a, nil
 	case "esc":
+		if a.busy {
+			// Pause/interrupt the running agent. The engine cancels the
+			// current model stream / tool and finishes via EvDone, which
+			// resets busy and reports the paused state.
+			a.paused = true
+			a.engine.Stop()
+			a.status = "pausing agent..."
+			a.toast = "agent paused (esc)"
+			a.toastUntil = now.Add(2 * time.Second)
+			return a, nil
+		}
 		if !a.busy && a.composer.Value() == "" {
 			if a.escArmed {
 				a.escArmed = false
@@ -1007,6 +1023,7 @@ func runShellLocal(root, command string, ctx context.Context) (string, error) {
 func (a *app) startAgent(prompt string) tea.Cmd {
 	a.items = append(a.items, &chatItem{kind: "user", raw: prompt, rendered: a.renderUser(prompt)})
 	a.busy = true
+	a.paused = false
 	a.busyAt = time.Now()
 	a.status = "starting agent..."
 	a.streaming = nil
@@ -1665,8 +1682,20 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		if a.streaming != nil {
 			a.streaming = nil
 		}
+		if a.paused {
+			// Paused via esc / interrupted via ctrl+c: not an error even when
+			// the run ended without a cancellation error (the stream path
+			// stops silently while a tool path reports context.Canceled).
+			a.paused = false
+			a.addSystem("agent paused — run interrupted midway, state saved to .astra/")
+			return a.syncTitle()
+		}
 		if data, ok := ev.Data.(map[string]any); ok {
 			if errStr, _ := data["error"].(string); errStr != "" {
+				if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "cancelled") {
+					a.addSystem("agent paused — run interrupted midway, state saved to .astra/")
+					return a.syncTitle()
+				}
 				a.addError("run failed: " + errStr)
 			}
 		}
@@ -2328,7 +2357,7 @@ func containsPlanKeyword(text string) bool {
 
 // renderStatusIndicator builds the "Working (Ns • esc to interrupt)" row
 // that sits above the composer while the agent is busy, mirroring
-//codex-rs status_indicator_widget.rs. The label shimmers when motion is
+// codex-rs status_indicator_widget.rs. The label shimmers when motion is
 // enabled; renders as a static accent otherwise. Empty when the agent is
 // idle.
 func (a *app) renderStatusIndicator() string {
@@ -2371,9 +2400,10 @@ func fmtElapsedCompact(d time.Duration) string {
 
 // renderComposerHint builds the single-line hint strip that sits between
 // the viewport and the composer, mirroring codex-rs footer.rs footer_from_props:
-//   "? for shortcuts" while idle (with plan-mode / queue overrides)
-//   "tab to queue message" while the agent is busy
-//   "esc cancel · enter submit" while the agent is asking the user
+//
+//	"? for shortcuts" while idle (with plan-mode / queue overrides)
+//	"tab to queue message" while the agent is busy
+//	"esc cancel · enter submit" while the agent is asking the user
 func (a *app) renderComposerHint() string {
 	if a.mode == modePermission {
 		return styleDim.Render("choose an option above · esc to cancel")

@@ -74,7 +74,8 @@ var slashCommands = []slashCmd{
 	{Name: "/tasks", Desc: "show todo list", Category: "Session"},
 	{Name: "/clear", Desc: "clear chat view", Category: "Session", Shortcut: "Ctrl+L"},
 	{Name: "/new", Desc: "new session", Category: "Session", Shortcut: "Ctrl+T"},
-	{Name: "/quit", Desc: "exit Astra", Category: "Help"},
+	{Name: "/quit", Desc: "exit Astra", Category: "Help", Shortcut: "Ctrl+C"},
+	{Name: "/exit", Desc: "exit Astra", Category: "Help"},
 }
 
 // atCompletion candidates for the @ autocomplete. Filled by the host app.

@@ -238,8 +238,8 @@ func TestProviderSettingsForm(t *testing.T) {
 	if !s3.ed.isNew {
 		t.Fatal("custom form should be marked isNew")
 	}
-	s3.ed.fields[0].ti.SetValue("mycustom") // ID
-	s3.ed.fields[1].ti.SetValue("My Custom") // Name
+	s3.ed.fields[0].ti.SetValue("mycustom")                  // ID
+	s3.ed.fields[1].ti.SetValue("My Custom")                 // Name
 	s3.ed.fields[3].ti.SetValue("https://custom.example/v1") // BaseURL
 	done, _, _ = s3.runButton("save", a)
 	if !done {
@@ -550,5 +550,94 @@ func TestReverseSearch(t *testing.T) {
 	c.recomputeSearch()
 	if len(c.searchHits) != 0 || c.searchPos != -1 {
 		t.Fatalf("expected no hits, got %+v", c.searchHits)
+	}
+}
+
+// TestEngineEventChainStayArmed guards against a regression where the engine
+// event listener was a one-shot read: after the first event the TUI stopped
+// draining the engine channel, so streaming deltas and EvDone never arrived
+// and the UI hung in the "busy / loading" state forever.
+func TestEngineEventChainStayArmed(t *testing.T) {
+	a := newTestApp(t)
+	a.busy = true
+	_, _ = a.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+
+	emits := []engine.EventType{
+		engine.EvGoal,
+		engine.EvAssistantStart,
+		engine.EvDelta,
+		engine.EvSystem,
+		engine.EvAssistantEnd,
+		engine.EvToolStart,
+		engine.EvToolEnd,
+		engine.EvDone,
+	}
+	go func() {
+		for _, e := range emits {
+			a.events <- engine.Event{Type: e, Data: "x"}
+		}
+	}()
+
+	m := tea.Model(a)
+	cmd := a.waitEvent
+	for i := 0; i < len(emits); i++ {
+		msg := cmd()
+		if msg == nil {
+			t.Fatalf("step %d: waitEvent returned nil", i)
+		}
+		var next tea.Cmd
+		m, next = m.Update(msg)
+		cmd = next
+		if cmd == nil {
+			t.Fatalf("step %d (type=%v): event chain broke — listener not re-armed", i, msg.(engineEventMsg).ev.Type)
+		}
+	}
+	app, ok := m.(*app)
+	if !ok {
+		t.Fatalf("model is not *app: %T", m)
+	}
+	if app.busy {
+		t.Fatal("busy should be reset after EvDone")
+	}
+}
+
+// TestEscPauseRunningAgent verifies that esc while the agent is busy pauses
+// the run (engine stopped) instead of doing nothing.
+func TestEscPauseRunningAgent(t *testing.T) {
+	a := newTestApp(t)
+	a.busy = true
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if a.status != "pausing agent..." {
+		t.Fatalf("status = %q, want %q", a.status, "pausing agent...")
+	}
+	if !a.paused {
+		t.Fatal("paused flag should be set when esc pauses a running agent")
+	}
+	// A subsequent EvDone (with no error) turns the paused flag into a
+	// friendly "agent paused" message instead of the generic finished line.
+	a.busy = false
+	_ = a.handleEngineEvent(engine.Event{Type: engine.EvDone, Data: map[string]any{"error": ""}})
+	if a.paused {
+		t.Fatal("paused flag should reset after EvDone")
+	}
+	found := false
+	for _, it := range a.items {
+		if it.kind == "system" && strings.Contains(it.raw, "paused") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("EvDone should surface an 'agent paused' message after esc")
+	}
+	// Idle (not busy): esc with an empty composer arms the two-press backtrack.
+	a.busy = false
+	a.composer.SetValue("")
+	_, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !a.escArmed {
+		t.Fatal("esc should arm backtrack while idle")
+	}
+	if a.status != "esc esc to edit previous message" {
+		t.Fatalf("status = %q", a.status)
 	}
 }

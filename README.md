@@ -29,13 +29,13 @@ Agent 是可替换、可销毁的计算资源；持久化的系统智能存在�
     - `!` 进入 shell 模式（本地 30s 超时，保留环境变量）
   - ⌘K 命令面板：模糊匹配，键盘导航，分组着色
   - 状态栏实时显示：Provider/Model、权限模式、branch、Goal 进度、Claim/Unknown/Evidence 计数、Token 用量与累计 USD 成本
-  - 键盘：`enter` 发送，`alt+enter` 换行，`ctrl+c` 停止/退出，`ctrl+u/d` 滚动，`x`/`ctrl+o` 折叠工具输出，`?`/`F1` 帮助，`ctrl+b` 侧边栏，`ctrl+k` 调色板，`ctrl+l` 清屏，`ctrl+t` 新会话，`ctrl+↑/↓` 历史，`/undo` 撤回一轮
+  - 键盘：`enter` 发送，`alt+enter` 换行，`esc` 暂停（运行中中断 agent）/ 取消，`ctrl+c` 停止/退出，`ctrl+u/d` 滚动，`x`/`ctrl+o` 折叠工具输出，`?`/`F1` 帮助，`ctrl+b` 侧边栏，`ctrl+k` 调色板，`ctrl+l` 清屏，`ctrl+t` 新会话，`ctrl+↑/↓` 历史，`/undo` 撤回一轮
 
 - **Slash 命令全集**（按类别）
 
   | 类别 | 命令 |
   | --- | --- |
-  | Session | `/help /status /goal /claims /unknowns /evidence /actions /events /sessions /resume /rename /export /clear /new /quit` |
+  | Session | `/help /status /goal /claims /unknowns /evidence /actions /events /sessions /resume /rename /export /clear /new /quit /exit /q` |
   | Knowledge | `/tree` 项目文件树 |
   | Build | `/init /index /verify /commit /branch /diff /diff-base [base]` |
   | Model | `/model /provider /cost /stats /reasoning [low|medium|high|xhigh]` |
