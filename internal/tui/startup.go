@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -23,33 +22,32 @@ type startupDoneMsg struct {
 }
 
 type startupModel struct {
-	spinner spinner.Model
-	stage   string
-	done    int
-	total   int
-	width   int
-	result  *startupDoneMsg
+	anim   *asciiAnim
+	stage  string
+	done   int
+	total  int
+	width  int
+	result *startupDoneMsg
 }
 
 func newStartupModel() startupModel {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("36"))
-	return startupModel{spinner: sp, stage: "Scanning workspace…"}
+	return startupModel{anim: newAsciiAnim(framesDots), stage: "Scanning workspace…"}
 }
 
 func (m startupModel) Init() tea.Cmd {
-	return m.spinner.Tick
+	if !motionEnabled() {
+		return nil
+	}
+	return animTickCmd()
 }
 
 func (m startupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+	case animTickMsg:
+		m.anim.tick()
+		return m, animTickCmd()
 	case startupProgressMsg:
 		m.stage = msg.stage
 		m.done = msg.done
@@ -67,7 +65,7 @@ func (m startupModel) View() string {
 		width = 80
 	}
 	lines := []string{
-		m.spinner.View() + " Astra — " + m.stage,
+		m.anim.view() + " Astra — " + m.stage,
 	}
 	if m.total > 0 {
 		barWidth := 36

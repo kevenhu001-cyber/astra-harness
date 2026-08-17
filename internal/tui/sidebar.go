@@ -34,11 +34,14 @@ type sidebarItem struct {
 
 type sidebar struct {
 	visible bool
-	mode    sidebarMode
-	cursor  int
-	files   []string
-	width   int
-	height  int
+	mode   sidebarMode
+	cursor int
+	files  []string
+	width  int
+	height int
+
+	// Tab labels for the mode switcher shown at the top of the sidebar.
+	tabs []string
 
 	// sessions filtered to root
 	root    string
@@ -46,10 +49,22 @@ type sidebar struct {
 	loading bool
 
 	lastRefresh time.Time
+
+	// screenLeft / screenTop describe where the sidebar is laid out within
+	// the terminal (set by app.layout). The app routes mouse clicks into the
+	// sidebar when MouseMsg.X >= screenLeft.
+	screenLeft int
+	screenTop  int
 }
 
 func newSidebar(e *engine.Engine) *sidebar {
-	return &sidebar{root: e.Root, engine: e, mode: sidebarSessions, width: 26}
+	return &sidebar{
+		root:  e.Root,
+		engine: e,
+		mode:  sidebarSessions,
+		width: 26,
+		tabs:  []string{"Sessions", "Files", "Knowledge", "Activity"},
+	}
 }
 
 func (s *sidebar) SetSize(w, h int) {
@@ -214,10 +229,14 @@ func (s *sidebar) Update(msg tea.Msg) tea.Cmd {
 		if len(items) > 0 {
 			s.cursor = (s.cursor + 1) % len(items)
 		}
-	case "tab":
+	case "tab", "m":
 		s.NextMode()
-	case "m":
-		s.NextMode()
+	case "1", "2", "3", "4":
+		idx := int(key.String()[0] - '1')
+		if idx < len(s.tabs) {
+			s.mode = sidebarMode(idx)
+			s.cursor = 0
+		}
 	}
 	return nil
 }
@@ -245,23 +264,35 @@ func (s *sidebar) View() string {
 	if w > 38 {
 		w = 38
 	}
-	titleMode := map[sidebarMode]string{
-		sidebarSessions: "Sessions",
-		sidebarFiles:    "Files",
-		sidebarGoals:    "Knowledge",
-		sidebarActivity: "Activity",
-	}
-	title := titleMode[s.mode]
-	hint := "tab change"
+	hint := "↑↓ navigate · tab switch · enter open"
 	var b strings.Builder
-	header := styleTitle.Render("❮ "+title) + "  " + styleDim.Render("("+hint+")")
-	b.WriteString(header)
+
+	// Tab strip — active tab is rendered with the accent key style, others dim.
+	// We wrap to two rows if the combined length exceeds the sidebar width.
+	tabs := s.tabs
+	var tabsLine strings.Builder
+	var rowLen int
+	for i, t := range tabs {
+		rendered := styleKey.Render(t)
+		if i != int(s.mode) {
+			rendered = styleDim.Render(t)
+		}
+		seg := " " + rendered + " "
+		if rowLen+lipgloss.Width(seg) > w-2 {
+			tabsLine.WriteString("\n")
+			rowLen = 0
+			seg = rendered + " "
+		}
+		tabsLine.WriteString(seg)
+		rowLen += lipgloss.Width(seg)
+	}
+	b.WriteString(tabsLine.String())
 	b.WriteString("\n")
 	b.WriteString(styleFaint.Render(strings.Repeat("─", w-2)))
 	b.WriteString("\n")
 
 	items := s.items()
-	maxLines := s.height - 8
+	maxLines := s.height - 6
 	if maxLines < 4 {
 		maxLines = 4
 	}
@@ -279,26 +310,82 @@ func (s *sidebar) View() string {
 	for i := start; i < end; i++ {
 		it := items[i]
 		label := fmt.Sprintf("%s %s", it.icon, it.label)
-		if len(label) > w-4 {
-			label = label[:w-5] + "…"
+		if len(label) > w-9 {
+			label = label[:w-10] + "…"
 		}
-		detail := styleDim.Render(truncate(it.detail, w-4))
-		row := label + "\n  " + detail
+		ordinal := fmt.Sprintf("%d.", i-start+1)
+		var prefix string
 		if i == s.cursor {
-			row = styleTitle.Render("● "+label) + "\n  " + styleValue.Render(truncate(it.detail, w-4))
+			prefix = styleKey.Render("›") + " " + styleKey.Render(ordinal) + " "
 		} else {
-			row = styleBody.Render(label) + "\n  " + styleDim.Render(truncate(it.detail, w-4))
+			prefix = "  " + styleDim.Render(ordinal) + " "
 		}
-		b.WriteString(row)
-		b.WriteString("\n")
+		detail := truncate(it.detail, w-8)
+		var labelStr string
+		if i == s.cursor {
+			labelStr = styleTitle.Render(label)
+		} else {
+			labelStr = styleBody.Render(label)
+		}
+		b.WriteString(prefix + labelStr + "\n")
+		if detail != "" {
+			if i == s.cursor {
+				b.WriteString(styleDim.Render("    " + detail))
+			} else {
+				b.WriteString(styleDim.Render("    " + detail))
+			}
+			b.WriteString("\n")
+		}
 	}
 	if len(items) == 0 {
 		b.WriteString(styleDim.Render("  (empty)"))
+		b.WriteString("\n")
 	}
 	if len(items) > end {
 		b.WriteString(styleDim.Render(fmt.Sprintf("  …+%d more", len(items)-end)))
+		b.WriteString("\n")
 	}
-	return lipgloss.NewStyle().Width(w).Height(s.height-2).Render(b.String())
+	b.WriteString(styleFaint.Render(strings.Repeat("─", w-2)))
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render(hint))
+	return lipgloss.NewStyle().Width(w).Height(s.height-2).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// HitAt maps a terminal (x,y) screen coordinate to a sidebar item and tab
+// when the click lands inside the sidebar. Returns the item (or nil) and
+// the new mode if the click landed on a tab. The app uses this to route
+// MouseMsg events into the sidebar.
+func (s *sidebar) HitAt(x, y int) (*sidebarItem, *sidebarMode) {
+	if !s.visible || s.screenLeft == 0 {
+		return nil, nil
+	}
+	if x < s.screenLeft || x >= s.screenLeft+s.width {
+		return nil, nil
+	}
+	if y < s.screenTop {
+		// Click is on the tab strip — switch tabs by tab number.
+		rel := y - s.screenTop
+		if rel == 0 {
+			for i := range s.tabs {
+				mode := sidebarMode(i)
+				return nil, &mode
+			}
+		}
+		return nil, nil
+	}
+	// Click is on the item area. Each item is two rows (label + detail), so
+	// divide the relative y by 2 to get the item index.
+	items := s.items()
+	if len(items) == 0 {
+		return nil, nil
+	}
+	relRow := (y - s.screenTop - 1) / 2 // -1 for the tab strip
+	idx := relRow
+	if idx >= 0 && idx < len(items) {
+		s.cursor = idx
+		return &items[idx], nil
+	}
+	return nil, nil
 }
 
 func iconForFile(p string) string {

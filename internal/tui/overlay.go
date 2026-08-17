@@ -162,10 +162,11 @@ func (o *overlay) update(msg tea.Msg) (closed bool, selected string, handled boo
 		}
 		return false, "", true
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Codex jumps to the in-tab row whose ordinal matches the key.
 		idx := int(key.String()[0] - '1')
-		if idx < len(o.tabs) {
-			o.tab = idx
-			o.clampSel()
+		start, end := o.tabRange()
+		if start+idx < end {
+			o.sel = start + idx
 		}
 		return false, "", true
 	case "enter":
@@ -272,15 +273,16 @@ func renderList(o *overlay, w int) string {
 	start, end := o.tabRange()
 	maxRows := 18
 	for i := start; i < end; i++ {
+		ordinal := fmt.Sprintf("%d.", i-start+1)
 		if i-start >= maxRows {
 			b.WriteString(styleDim.Render(fmt.Sprintf("  …+%d more", end-i)))
 			break
 		}
-		text := truncate(o.items[i], w-4)
+		text := truncate(o.items[i], w-10)
 		if i == o.sel {
-			b.WriteString(styleTitle.Render("● " + text))
+			b.WriteString(styleKey.Render("› ") + styleKey.Render(ordinal) + " " + styleTitle.Render(text))
 		} else {
-			b.WriteString(styleBody.Render("  " + text))
+			b.WriteString(styleBody.Render("  ") + styleDim.Render(ordinal) + " " + styleBody.Render(text))
 		}
 		b.WriteString("\n")
 	}
@@ -288,6 +290,23 @@ func renderList(o *overlay, w int) string {
 		b.WriteString(styleDim.Render("(no items)"))
 	}
 	return b.String()
+}
+
+// stripOrdinal removes the leading "N. " ordinal that renderList prefixes to
+// every row, so onSelect handlers that parse the raw label can keep using
+// strings.Fields(sel). Tolerates the leading "  " / "› " gutter characters.
+func stripOrdinal(s string) string {
+	s = strings.TrimLeft(s, " ›")
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			continue
+		}
+		if i > 0 && s[i] == '.' && (i+1 >= len(s) || s[i+1] == ' ') {
+			return strings.TrimLeft(s[i+2:], " ")
+		}
+		break
+	}
+	return s
 }
 
 func renderDetail(o *overlay, w int) string {
@@ -552,6 +571,7 @@ func overlaySessions(e *engine.Engine) *overlay {
 	}
 	o.finishTab()
 	o.onSelect = func(sel string) string {
+		sel = stripOrdinal(sel)
 		id := strings.Fields(sel)
 		if len(id) == 0 {
 			return ""
@@ -643,7 +663,7 @@ func overlayStatusLine(e *engine.Engine) *overlay {
 			fmt.Sprintf("ID: %s\n\n%s\n\nEnter toggles this item.", id, statusLineItems[id]))
 	}
 	o.onSelect = func(sel string) string {
-		fields := strings.Fields(sel)
+		fields := strings.Fields(stripOrdinal(sel))
 		if len(fields) < 2 {
 			return ""
 		}
@@ -690,7 +710,11 @@ func overlayKeymap(e *engine.Engine) *overlay {
 			fmt.Sprintf("Action:    %s\nCurrent:    %s\n\nPress enter, then press the new key.", action, key))
 	}
 	o.onSelect = func(sel string) string {
-		return strings.Fields(sel)[0]
+		fields := strings.Fields(stripOrdinal(sel))
+		if len(fields) == 0 {
+			return ""
+		}
+		return fields[0]
 	}
 	return o
 }
@@ -741,7 +765,8 @@ func overlayModels(e *engine.Engine) *overlay {
 	}
 	o.finishTab()
 	o.onSelect = func(sel string) string {
-		text := strings.TrimSpace(strings.TrimPrefix(sel, "★"))
+		text := stripOrdinal(sel)
+		text = strings.TrimSpace(strings.TrimPrefix(text, "★"))
 		if strings.HasPrefix(text, "○ ") || strings.HasPrefix(text, "● ") {
 			text = strings.TrimSpace(text[2:])
 		}
@@ -875,7 +900,7 @@ func overlayBacktrack(a *app) *overlay {
 		o.body = "(no user messages to backtrack to)"
 	}
 	o.onSelect = func(sel string) string {
-		fields := strings.Fields(sel)
+		fields := strings.Fields(stripOrdinal(sel))
 		if len(fields) > 0 {
 			return strings.TrimPrefix(fields[0], "#")
 		}

@@ -1,12 +1,20 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// TestMain pins reduced motion so animated surfaces (live bullets, shimmer
+// placeholders) render statically and assertions stay deterministic.
+func TestMain(m *testing.M) {
+	os.Setenv("ASTRA_REDUCE_MOTION", "1")
+	os.Exit(m.Run())
+}
 
 // strip renders a Codex-style cell and removes ANSI codes for text assertions.
 func strip(s string) string {
@@ -68,12 +76,19 @@ func TestCodexExecCellLive(t *testing.T) {
 }
 
 func TestCodexUserShellCell(t *testing.T) {
-	got := strip(codexUserShellCell("ls", "file1\nfile2", 80))
+	got := strip(codexUserShellCell("ls", "file1\nfile2", true, 80))
 	if !strings.Contains(got, "• You ran ls") {
 		t.Fatalf("missing You ran header:\n%s", got)
 	}
 	if !strings.Contains(got, "└ file1\n    file2") {
 		t.Fatalf("missing shell output block:\n%s", got)
+	}
+	got = strip(codexUserShellCell("false", "boom", false, 80))
+	if !strings.Contains(got, "• You ran false") {
+		t.Fatalf("failure cell missing header:\n%s", got)
+	}
+	if !strings.Contains(got, "boom") {
+		t.Fatalf("failure cell missing output:\n%s", got)
 	}
 }
 

@@ -176,7 +176,7 @@ func compactJSON(s string) string {
 
 // codexExecHeader renders the first line of a tool cell:
 //
-//   - Running cargo build          (live, dim bullet)
+//   - Running cargo build          (live, animated bullet)
 //   - Ran go test ./...            (success, green bullet)
 //   - Ran cargo build              (failure, red bullet)
 //   - Called search({"q":"x"})
@@ -185,24 +185,32 @@ func codexExecHeader(live, ok bool, name, args string) string {
 	if live {
 		verb = "Running"
 	}
-	bullet := styleBullet
-	if !live {
-		if ok {
-			bullet = styleExitOK
-		} else {
-			bullet = styleExitErr
-		}
+	var bullet string
+	switch {
+	case live:
+		bullet = activityBullet(time.Now())
+	case ok:
+		bullet = styleExitOK.Render(codexBullet)
+	default:
+		bullet = styleExitErr.Render(codexBullet)
 	}
-	return bullet.Render(codexBullet) + " " +
+	return bullet + " " +
 		styleVerb.Render(verb) + " " +
 		styleCmdName.Render(label)
 }
 
-// codexUserShellHeader renders the user `!` shell cell header:
+// codexUserShellHeader renders the user `!` shell cell header, with a
+// success/failure-colored bullet like committed exec cells:
 //
 //   - You ran ls
-func codexUserShellHeader(cmd string) string {
-	return styleBullet.Render(codexBullet) + " " +
+func codexUserShellHeader(cmd string, ok bool) string {
+	bullet := styleBullet
+	if ok {
+		bullet = styleExitOK
+	} else {
+		bullet = styleExitErr
+	}
+	return bullet.Render(codexBullet) + " " +
 		styleVerb.Render("You ran") + " " +
 		styleCmdName.Render(cmd)
 }
@@ -330,8 +338,8 @@ func codexExecCell(width int, live, ok bool, name, args, output string, maxOutpu
 //   - You ran ls
 //     └ file1
 //     file2
-func codexUserShellCell(cmd, output string, width int) string {
-	header := codexUserShellHeader(cmd)
+func codexUserShellCell(cmd, output string, ok bool, width int) string {
+	header := codexUserShellHeader(cmd, ok)
 	body := codexOutputBlock(output, shellMaxLines, width)
 	return header + "\n" + body
 }

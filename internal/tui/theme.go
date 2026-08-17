@@ -257,6 +257,7 @@ var (
 	styleComposer        lipgloss.Style
 	styleComposerFocused lipgloss.Style
 	styleComposerBash    lipgloss.Style
+	styleComposerPlan    lipgloss.Style
 	styleOverlay         lipgloss.Style
 	stylePanel           lipgloss.Style
 	styleCodeBlock       lipgloss.Style
@@ -341,14 +342,25 @@ func rebuildStylesLocked() {
 	styleStatusBar = lipgloss.NewStyle().Foreground(pal.WhiteDim).Background(pal.Bg1).Padding(0, 1)
 	styleStatusBarKey = lipgloss.NewStyle().Foreground(pal.Accent).Bold(true)
 
-	// Composer is a borderless single-line input; focus is expressed by the
-	// accent-colored "> " prompt and an underline rule (see composer.go).
+	// Composer is a rounded-band input whose border color signals the mode:
+	// dim when idle, accent-cyan when focused, red when in `!` bash mode, and
+	// magenta while plan mode is active (codex-rs chat_composer.rs).
 	styleComposer = lipgloss.NewStyle().
-		Padding(0, 0)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.GrayLo).
+		Padding(0, 1)
 	styleComposerFocused = lipgloss.NewStyle().
-		Padding(0, 0)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.Cyan).
+		Padding(0, 1)
 	styleComposerBash = lipgloss.NewStyle().
-		Padding(0, 0)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.Red).
+		Padding(0, 1)
+	styleComposerPlan = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.Magenta).
+		Padding(0, 1)
 
 	styleOverlay = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

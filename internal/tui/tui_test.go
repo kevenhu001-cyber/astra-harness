@@ -96,8 +96,8 @@ func TestOverlayShortcutsCodexStrings(t *testing.T) {
 func TestComposerImageAttachmentRendered(t *testing.T) {
 	c := newComposer(80)
 	c.AddImage("/tmp/shot.png")
-	out := c.View(80)
-	if !strings.Contains(out, "[Image #1]") || !strings.Contains(out, "/tmp/shot.png") {
+	out := strip(c.View(80))
+	if !strings.Contains(out, "image #1") || !strings.Contains(out, "/tmp/shot.png") {
 		t.Fatalf("image attachment not rendered:\n%s", out)
 	}
 }

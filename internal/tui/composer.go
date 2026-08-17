@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,13 +53,13 @@ var slashCommands = []slashCmd{
 	{Name: "/diff", Desc: "show git diff", Category: "Build"},
 	{Name: "/sessions", Desc: "list saved sessions", Category: "Session"},
 	{Name: "/resume", Desc: "resume a session", Category: "Session", Placeholder: "session id"},
+	{Name: "/compact", Desc: "compact conversation context", Category: "Session"},
 	{Name: "/export", Desc: "export transcript as markdown", Category: "Session"},
 	{Name: "/login", Desc: "sign in with your Astra account", Category: "Session"},
 	{Name: "/logout", Desc: "sign out locally", Category: "Session"},
 	{Name: "/whoami", Desc: "show the signed-in account", Category: "Session"},
 	{Name: "/debug", Desc: "show config and state paths", Category: "Help"},
 	{Name: "/theme", Desc: "switch theme (dark/light/mono)", Category: "Help"},
-	{Name: "/stats", Desc: "session statistics and metrics", Category: "Help"},
 	{Name: "/reasoning", Desc: "set reasoning effort (low|medium|high|xhigh)", Category: "Help"},
 	{Name: "/diff-base", Desc: "diff against base branch (e.g. main)", Category: "Build"},
 	{Name: "/rename", Desc: "rename the active session", Category: "Session"},
@@ -100,19 +101,30 @@ type composer struct {
 	searchPos   int   // position within searchHits
 
 	// Modes
-	bashMode bool
-	bashLine string
+	bashMode      bool
+	bashLine      string
+	savedGlyph    string // promptGlyph saved while in bash mode
+	savedTaPrompt string // textarea prompt saved while in bash mode
+
+	// Visual mode state (set by the app so View can pick the right border tint).
+	planMode bool
 
 	// Configurable Codex key chords (set from engine keymap at startup).
 	historySearchKey string
 	newlineKey       string
+
+	// promptGlyph is the composer prompt character ("›" normally, "»" while
+	// an Ultra-level reasoning effort is active, mirroring Codex's
+	// effort_ignition prompt accent).
+	promptGlyph string
 
 	// Files context for @ autocomplete
 	fileCandidates []atCompletion
 
 	width int
 
-	// images holds attached local image paths rendered as [Image #N] rows.
+	// images holds attached local image paths rendered as Codex-style
+	// "• image #N path" rows above the composer.
 	images []string
 }
 
@@ -129,9 +141,27 @@ func newComposer(width int) composer {
 		ta: ta, focused: true, width: width,
 		historySearchKey: "ctrl+r",
 		newlineKey:       "ctrl+j",
+		promptGlyph:      "›",
 	}
 }
 
+// SetPromptGlyph updates the composer prompt character (e.g. "»" for
+// Ultra-level reasoning effort) on the textarea and the shimmer placeholder.
+func (c *composer) SetPromptGlyph(g string) {
+	if g == "" {
+		g = "›"
+	}
+	c.promptGlyph = g
+	c.ta.Prompt = g + " "
+}
+
+// SetPlanMode mirrors engine.Perm.IsPlanMode() into the composer so View can
+// switch to a magenta-bordered style.
+func (c *composer) SetPlanMode(on bool) {
+	c.planMode = on
+}
+
+// SetWidth updates the rendered width.
 func (c *composer) SetWidth(w int) {
 	c.width = w
 	c.ta.SetWidth(w - 6)
@@ -167,18 +197,30 @@ func (c *composer) IsBash() bool { return c.bashMode }
 
 // EnterBash starts bash mode (used by `!` keystroke from app).
 func (c *composer) EnterBash() {
+	if c.bashMode {
+		return
+	}
+	c.savedGlyph = c.promptGlyph
+	c.savedTaPrompt = c.ta.Prompt
 	c.bashMode = true
 	c.bashLine = ""
 	c.ta.SetValue("")
 	c.plain = true
+	c.ta.Prompt = "! "
+	c.promptGlyph = "!"
 }
 
 // ExitBash exits bash mode back to normal composer.
 func (c *composer) ExitBash() {
+	if !c.bashMode {
+		return
+	}
 	c.bashMode = false
 	c.plain = false
 	c.ta.SetValue(c.bashLine)
 	c.ta.Focus()
+	c.promptGlyph = c.savedGlyph
+	c.ta.Prompt = c.savedTaPrompt
 }
 
 // SetFileCandidates pre-populates @ file completions.
@@ -506,10 +548,19 @@ func (c *composer) View(width int) string {
 		return c.viewSearch(width)
 	}
 	inner := c.ta.View()
-	if len(c.images) > 0 {
+	if len(c.images) == 0 && c.ta.Value() == "" && !c.bashMode {
+		// Codex shimmers the "Ask …" placeholder while the composer is idle.
+		// The textarea can't style the placeholder per character, so the empty
+		// state renders manually (prompt + shimmer + no cursor), and the
+		// textarea takes over as soon as the user types.
+		inner = c.placeholderView()
+	} else if len(c.images) > 0 {
 		var img strings.Builder
 		for i, p := range c.images {
-			fmt.Fprintf(&img, "  %s %s\n", styleDim.Render(fmt.Sprintf("[Image #%d]", i+1)), styleBody.Render(p))
+			fmt.Fprintf(&img, "%s %s %s\n",
+				styleBullet.Render(codexBullet),
+				styleDim.Render(fmt.Sprintf("image #%d", i+1)),
+				styleBody.Render(p))
 		}
 		inner = img.String() + inner
 	}
@@ -519,6 +570,9 @@ func (c *composer) View(width int) string {
 	}
 	if c.bashMode {
 		boxStyle = styleComposerBash
+	}
+	if c.planMode && !c.bashMode {
+		boxStyle = styleComposerPlan
 	}
 	box := boxStyle.Width(width - 2).Render(inner)
 	if !c.show && !c.atShow {
@@ -591,27 +645,47 @@ func (c *composer) View(width int) string {
 	return b.String()
 }
 
+// placeholderView renders the idle composer prompt + shimmering placeholder.
+func (c *composer) placeholderView() string {
+	var b strings.Builder
+	b.WriteString(styleDim.Render(c.promptGlyph + " "))
+	if motionEnabled() {
+		b.WriteString(shimmerRender("Ask Astra to do anything", time.Now()))
+	} else {
+		b.WriteString(styleDim.Render("Ask Astra to do anything"))
+	}
+	return b.String()
+}
+
 // viewSearch renders the reverse-i-search status. The actual prompt content
-// is hidden so the user can focus on the match.
+// is hidden so the user can focus on the match. The layout matches
+// codex-rs history_search.rs: a single-line status row above an inline
+// preview of the current match.
 func (c *composer) viewSearch(width int) string {
 	var b strings.Builder
-	var current string
-	var indicator string
-	if c.searchPos >= 0 && c.searchPos < len(c.searchHits) {
-		current = c.history[c.searchHits[c.searchPos]]
-		if len(current) > 100 {
-			current = current[:97] + "…"
-		}
+	var previewText string
+	statusMsg := " searching…"
+	indicator := " [no matches]"
+	if c.searchQuery == "" {
+		statusMsg = ""
+	} else if len(c.searchHits) == 0 {
+		statusMsg = "  no match"
+	} else if c.searchPos >= 0 && c.searchPos < len(c.searchHits) {
+		statusMsg = "  ⏎ accept · esc cancel"
 		indicator = fmt.Sprintf(" [%d/%d]", c.searchPos+1, len(c.searchHits))
-	} else {
-		indicator = " [no matches]"
+		previewText = c.history[c.searchHits[c.searchPos]]
+		if len(previewText) > 100 {
+			previewText = previewText[:97] + "…"
+		}
 	}
-	fmt.Fprintf(&b, "%s(reverse-i-search)`%s':%s\n",
-		styleTitle.Render(""), c.searchQuery, indicator)
-	if current != "" {
-		b.WriteString(styleBody.Render("↳ " + current))
+	b.WriteString(styleDim.Render("(reverse-i-search):") + " ")
+	b.WriteString(styleValue.Render(c.searchQuery))
+	b.WriteString(indicator)
+	b.WriteString(statusMsg)
+	b.WriteString("\n")
+	if previewText != "" {
+		b.WriteString(styleBody.Render("↳ " + previewText))
 		b.WriteString("\n")
 	}
-	b.WriteString(styleDim.Render("ctrl+r older · ctrl+s newer · enter commit · esc cancel"))
 	return styleComposerFocused.Width(width - 2).Render(b.String())
 }

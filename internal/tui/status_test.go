@@ -76,9 +76,9 @@ func TestRenderPermissionCodexStyle(t *testing.T) {
 		"Reason:",
 		"$ go test ./...",
 		"1. Yes, proceed",
-		"2. Yes, allow for this session",
-		"3. No, deny once",
-		"4. No, deny for this session",
+		"2. Yes, and don't ask again for this command in this session",
+		"3. No, continue without running it",
+		"4. No, and don't ask again for this command in this session",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("permission prompt missing %q:\n%s", want, got)

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	atclip "github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -43,8 +42,11 @@ type chatItem struct {
 }
 
 type streamingMsg struct {
-	raw   string
-	start time.Time
+	raw       string // full text used by renderAssistantStreaming fallback
+	start     time.Time
+	committed string // bytes up to and including the last newline; rendered once
+	tail      string // bytes after the last newline (the live partial line)
+	cached    string // rendered glamour lines for `committed`; reset on change
 }
 
 type engineEventMsg struct {
@@ -73,6 +75,7 @@ type imagePastedMsg struct {
 type loginDoneMsg struct {
 	cred *auth.Credential
 	err  error
+	code string // device code this result belongs to; stale polls are ignored
 }
 
 type bashDoneMsg struct {
@@ -102,7 +105,9 @@ type app struct {
 	palette       palette
 	sidebar       sidebar
 	overlay       *overlay
-	spinner       spinner.Model
+	spinner       *asciiAnim
+	ignition      *effortIgnition
+	headerHeight  int
 
 	mode                string
 	busy                bool
@@ -132,6 +137,7 @@ type app struct {
 	userEmail           string
 	deviceFlow          *auth.DeviceFlow
 	loginOverlay        *loginOverlay
+	planNudgeDismissed  bool
 }
 
 type askState struct {
@@ -141,12 +147,9 @@ type askState struct {
 
 // NewApp builds the TUI model.
 func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(activePalette().AccentHi)
 	a := &app{
 		root: root, engine: eng, cfg: cfg, events: eng.Events,
-		spinner: sp, mode: modeChat,
+		spinner: newAsciiAnim(framesDots), mode: modeChat,
 		startedAt: time.Now(),
 	}
 	if cred, err := auth.LoadCredential(); err == nil && cred != nil {
@@ -165,10 +168,7 @@ func NewApp(root string, cfg *engine.Config, eng *engine.Engine) *app {
 	a.palette = palette{}
 	// Pre-populate file candidates for the @ autocomplete.
 	a.refreshFileCandidates()
-	a.addSystem(fmt.Sprintf("◆ Astra · %s · %s/%s · branch %s",
-		filepath.Base(root), eng.ProviderID(), eng.Model, eng.Git.BranchOr("-")))
-	a.addSystem(eng.Index.Stats())
-	a.addWelcomeHints()
+	a.addWelcome()
 	return a
 }
 
@@ -186,7 +186,7 @@ func RunWithOptions(root string, cfg *engine.Config, eng *engine.Engine, showRes
 			a.overlay = overlaySessions(eng)
 		}
 	}
-	p := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithMouseAllMotion())
+	p := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -194,7 +194,43 @@ func RunWithOptions(root string, cfg *engine.Config, eng *engine.Engine, showRes
 }
 
 func (a *app) Init() tea.Cmd {
-	return tea.Batch(a.spinner.Tick, a.waitEvent, tea.SetWindowTitle("Astra · "+filepath.Base(a.root)))
+	cmds := []tea.Cmd{a.waitEvent, a.syncTitle()}
+	if motionEnabled() {
+		cmds = append(cmds, animTickCmd())
+	}
+	return tea.Batch(cmds...)
+}
+
+// animTickMsg carries the wall-clock time of the shared animation tick.
+// One 50ms loop drives the spinner frames, the shimmer sweep, and the
+// effort ignition so every animated surface stays in sync.
+type animTickMsg time.Time
+
+// animTickCmd schedules the next animation frame.
+func animTickCmd() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg { return animTickMsg(t) })
+}
+
+// animTick advances the animated surfaces and re-renders while anything is
+// moving. Reduced-motion terminals return no command, ending the loop.
+func (a *app) animTick(now time.Time) tea.Cmd {
+	if !motionEnabled() {
+		return nil
+	}
+	if a.busy {
+		a.spinner.tick()
+	}
+	if a.ignition != nil {
+		if a.ignition.done(now) {
+			a.ignition = nil
+		}
+	}
+	// The streaming cell shimmers per frame; the header spinner and the
+	// ignition band re-render through View() on every tick cmd anyway.
+	if a.streaming != nil {
+		a.refreshViewport()
+	}
+	return animTickCmd()
 }
 
 func (a *app) waitEvent() tea.Msg {
@@ -229,13 +265,23 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.layout()
 		a.refreshViewport()
 		return a, nil
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		a.spinner, cmd = a.spinner.Update(msg)
-		if a.busy && a.streaming == nil {
-			// update spinner bar
+	case animTickMsg:
+		return a, a.animTick(time.Time(m))
+	case loginTickMsg:
+		if a.loginOverlay != nil {
+			if t := time.Time(m); a.loginOverlay.state == loginStatePending && !a.loginOverlay.existed && t.After(a.loginOverlay.deadline) {
+				a.loginOverlay.markExpired()
+			}
+			a.refreshViewport()
+			return a, loginOverlayTick()
 		}
-		return a, cmd
+		return a, nil
+	case loginAutoCloseMsg:
+		if a.loginOverlay != nil && a.loginOverlay.state == loginStateSuccess {
+			a.loginOverlay = nil
+			a.refreshViewport()
+		}
+		return a, nil
 	case engineEventMsg:
 		return a, a.handleEngineEvent(m.ev)
 	case indexDoneMsg:
@@ -277,18 +323,44 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginDoneMsg:
 		a.deviceFlow = nil
 		a.busy = false
-		if m.err != nil {
-			a.addError("login: " + m.err.Error())
-		} else if m.cred != nil {
+		// A retry started a newer flow while this poll was still running;
+		// its result no longer applies to the visible overlay.
+		if m.code != "" && a.loginOverlay != nil && a.loginOverlay.flow != nil && m.code != a.loginOverlay.flow.DeviceCode {
+			return a, nil
+		}
+		switch {
+		case m.err != nil:
+			// The countdown panel already flipped to the friendlier "expired"
+			// state when the deadline passed; the poll's timeout just confirms it.
+			if a.loginOverlay == nil || a.loginOverlay.state != loginStateExpired {
+				a.addError("login: " + m.err.Error())
+				if a.loginOverlay != nil {
+					a.loginOverlay.markError(m.err.Error())
+				}
+			}
+		case m.cred != nil:
 			if err := auth.SaveCredential(m.cred); err != nil {
 				a.addError("save credential: " + err.Error())
+				if a.loginOverlay != nil {
+					a.loginOverlay.markError(err.Error())
+				}
 			} else {
 				a.userEmail = m.cred.User.Email
+				a.status = "signed in as " + a.userEmail
+				if a.loginOverlay != nil {
+					a.loginOverlay.markSuccess(m.cred.User.Email)
+					a.refreshViewport()
+					return a, loginAutoClose()
+				}
 				a.addSystem("logged in as " + m.cred.User.Email)
+			}
+		default:
+			if a.loginOverlay != nil {
+				a.loginOverlay.markError("login finished without a credential")
 			}
 		}
 		a.refreshViewport()
-		return a, nil
+		return a, a.syncTitle()
 	case bashDoneMsg:
 		a.mode = modeChat
 		a.busy = false
@@ -303,7 +375,28 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.addSystem("palette → " + m.entry.title)
 		return a, a.executeCommand(m.entry.command)
 	case tea.MouseMsg:
-		a.vp, _ = a.vp.Update(msg)
+		// Wheel events scroll the chat viewport one row at a time and respect
+		// the existing at-bottom anchor. Non-wheel mouse events inside the
+		// sidebar footprint route into the sidebar's click handler.
+		switch m.Type {
+		case tea.MouseWheelUp:
+			a.vp.LineUp(1)
+		case tea.MouseWheelDown:
+			a.vp.LineDown(1)
+		case tea.MouseLeft:
+			if it, mode := a.sidebar.HitAt(m.X, m.Y); mode != nil {
+				a.sidebar.mode = *mode
+				a.sidebar.cursor = 0
+				a.refreshViewport()
+			} else if it != nil {
+				a.sidebarSelect(it)
+				a.refreshViewport()
+			} else {
+				a.vp, _ = a.vp.Update(msg)
+			}
+		default:
+			a.vp, _ = a.vp.Update(msg)
+		}
 		return a, nil
 	case tea.KeyMsg:
 		return a.handleKey(m)
@@ -316,10 +409,14 @@ func (a *app) layout() {
 	if a.sidebar.visible {
 		sideW = 26
 	}
+	header := a.renderHeader()
+	a.headerHeight = lipgloss.Height(header)
 	a.vp.Width = a.width - sideW - 2
 	a.vp.Height = a.viewportHeight()
 	a.composer.SetWidth(a.width - sideW)
 	a.sidebar.SetSize(sideW, a.height-2)
+	a.sidebar.screenLeft = a.width - sideW
+	a.sidebar.screenTop = 0
 	a.palette.SetSize(a.width, a.height)
 }
 
@@ -395,7 +492,11 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	if s != "" && s == a.engine.KeymapBinding("palette") {
-		a.palette.Show()
+		if a.palette.visible {
+			a.palette.Hide()
+		} else {
+			a.palette.Show()
+		}
 		return a, nil
 	}
 	if s != "" && s == a.engine.KeymapBinding("copy") {
@@ -418,6 +519,43 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd, submit := a.palette.Update(msg)
 		if submit {
 			return a, cmd
+		}
+		return a, nil
+	}
+
+	// Login overlay consumes keys while visible: o open, c copy, r retry,
+	// esc cancel (see loginOverlay.update).
+	if a.loginOverlay != nil {
+		switch action := a.loginOverlay.update(msg); action {
+		case "cancel":
+			a.loginOverlay = nil
+			a.deviceFlow = nil
+			a.refreshViewport()
+		case "open":
+			a.loginOverlay.open()
+		case "copy":
+			uri := a.loginOverlay.copyURI()
+			if err := atclip.WriteAll(uri); err != nil {
+				a.addError("copy: " + err.Error())
+			} else {
+				a.toast = "copied verification URI"
+				a.toastUntil = time.Now().Add(2 * time.Second)
+			}
+			a.refreshViewport()
+		case "retry":
+			// Tear down the stale flow/poll and start a fresh device code.
+			// Re-authenticating from the "already signed in" panel clears the
+			// saved credential first, otherwise /login would just show it again.
+			a.loginOverlay = nil
+			a.deviceFlow = nil
+			if a.userEmail != "" {
+				if err := auth.ClearCredential(); err != nil {
+					a.addError("logout: " + err.Error())
+					return a, nil
+				}
+				a.userEmail = ""
+			}
+			return a, a.executeCommand("/login")
 		}
 		return a, nil
 	}
@@ -449,26 +587,41 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		denyKey := a.engine.KeymapBinding("permission_deny")
 		neverKey := a.engine.KeymapBinding("permission_never")
 		switch {
-		case s == allowKey:
+		case s == allowKey || s == "1":
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case s == alwaysKey:
+			return a, a.syncTitle()
+		case s == alwaysKey || s == "2":
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: true, Always: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case s == denyKey || s == "esc":
+			return a, a.syncTitle()
+		case s == denyKey || s == "3":
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
-		case s == neverKey:
+			return a, a.syncTitle()
+		case s == neverKey || s == "4":
 			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false, Always: true})
 			a.mode = modeChat
 			a.pendingPerm = nil
 			a.refreshViewport()
+			return a, a.syncTitle()
+		case s == "esc":
+			// "Tell me what to do differently": deny and drop the user back
+			// to the composer with a hint pre-filled, matching Codex's
+			// approval_overlay.rs Cancel handler.
+			a.engine.AnswerPermission(a.pendingPerm.ID, engine.PermissionDecision{Allowed: false})
+			a.pendingPerm = nil
+			a.mode = modeChat
+			a.composer.SetValue("I can't run that command because — ")
+			a.composer.Focus()
+			a.refreshViewport()
+			return a, a.syncTitle()
 		}
 		return a, nil
 
@@ -503,7 +656,7 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Sidebar input mode: arrows + enter on the sidebar.
-	if a.sidebar.visible && (s == "j" || s == "k" || s == "up" || s == "down" || s == "tab" || s == "m" || s == "left" || s == "right") {
+	if a.sidebar.visible && (s == "j" || s == "k" || s == "up" || s == "down" || s == "tab" || s == "m" || s == "left" || s == "right" || s == "enter") {
 		a.sidebar.Update(msg)
 		// Only consume keys when sidebar is "claiming" the input.
 		// Convention: when the composer is empty, sidebar keeps focus.
@@ -564,9 +717,19 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.quit = true
 			return a, tea.Quit
 		}
+	case "shift+tab":
+		a.cyclePermissionMode()
+		return a, nil
 	default:
 		a.quitArmed = false
 		a.escArmed = false
+	}
+	// Esc dismisses the plan nudge while the draft still mentions "plan"
+	// (Codex behavior: esc hides the nudge, the composer keeps the draft).
+	if s == "esc" && !a.busy && a.nudgeVisible() {
+		a.planNudgeDismissed = true
+		a.refreshViewport()
+		return a, nil
 	}
 	switch s {
 	case "ctrl+l":
@@ -881,6 +1044,7 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 	case "/permissions", "/perm":
 		if args != "" {
 			a.engine.Perm.SetMode(args)
+			a.planNudgeDismissed = false
 			a.addSystem("permission mode: " + args)
 		} else {
 			a.overlay = &overlay{title: "Permissions",
@@ -889,19 +1053,22 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 	case "/plan":
 		on := !a.engine.Perm.IsPlanMode()
 		a.engine.Perm.SetPlanMode(on)
+		a.composer.SetPlanMode(on)
+		a.planNudgeDismissed = false
 		a.addSystem(fmt.Sprintf("plan mode: %v (write/execute blocked)", on))
 	case "/login":
-		if a.deviceFlow != nil {
+		if a.loginOverlay != nil {
 			a.toast = "login already in progress"
-			break
-		}
-		if a.userEmail != "" {
-			a.toast = "already signed in as " + a.userEmail
+			a.toastUntil = time.Now().Add(2 * time.Second)
 			break
 		}
 		server := a.cfg.AuthServer
 		if server == "" {
 			server = auth.DefaultServer
+		}
+		if a.userEmail != "" {
+			a.loginOverlay = newLoginOverlayAlreadySignedIn(a.userEmail)
+			break
 		}
 		flow, err := auth.New(server).StartDevice(context.Background())
 		if err != nil {
@@ -909,37 +1076,10 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 			break
 		}
 		a.deviceFlow = flow
-		a.addSystem(fmt.Sprintf("device login · open %s · code %s (expires %ds)", flow.VerificationURI, flow.UserCode, flow.ExpiresIn))
+		a.loginOverlay = newLoginOverlayPending(flow)
+		a.refreshViewport()
 		_ = auth.OpenBrowser(flow.VerificationURI)
-		return func() tea.Msg {
-			c := auth.New(server)
-			interval := time.Duration(flow.Interval) * time.Second
-			if interval < time.Second {
-				interval = 5 * time.Second
-			}
-			deadline := time.Now().Add(time.Duration(flow.ExpiresIn) * time.Second)
-			for {
-				if time.Now().After(deadline) {
-					return loginDoneMsg{err: fmt.Errorf("authorization expired")}
-				}
-				res, err := c.PollDevice(context.Background(), flow.DeviceCode)
-				if err != nil {
-					time.Sleep(interval)
-					continue
-				}
-				switch res.Status {
-				case "approved":
-					return loginDoneMsg{cred: &auth.Credential{
-						Server: server, Token: res.AccessToken, User: *res.User,
-						ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-					}}
-				case "expired":
-					return loginDoneMsg{err: fmt.Errorf("authorization expired")}
-				default:
-					time.Sleep(interval)
-				}
-			}
-		}
+		return tea.Batch(loginPollCmd(server, flow), loginOverlayTick())
 	case "/logout":
 		if err := auth.ClearCredential(); err != nil {
 			a.addError("logout: " + err.Error())
@@ -1038,6 +1178,14 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 				a.addError(err.Error())
 			} else {
 				a.addSystem("reasoning effort: " + args)
+				if args == "xhigh" {
+					if motionEnabled() {
+						a.ignition = newEffortIgnition("MAX")
+					}
+					a.composer.SetPromptGlyph("»")
+				} else {
+					a.composer.SetPromptGlyph("›")
+				}
 			}
 		}
 	case "/theme":
@@ -1087,6 +1235,7 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 	case "/new":
 		a.items = nil
 		a.streaming = nil
+		a.planNudgeDismissed = false
 		_ = a.engine.NewSession()
 		a.addSystem("new session — state and sessions remain in .astra/")
 	case "/quit", "/exit", "/q":
@@ -1096,7 +1245,42 @@ func (a *app) executeCommand(cmdline string) tea.Cmd {
 		a.addError("unknown command: " + cmd + " (try /help or ⌘K)")
 	}
 	a.refreshViewport()
-	return nil
+	return a.syncTitle()
+}
+
+// loginPollCmd polls the device flow until approved/expired and reports back
+// with the flow's device code so stale results (from a retried flow) can be
+// dropped by the app.
+func loginPollCmd(server string, flow *auth.DeviceFlow) tea.Cmd {
+	return func() tea.Msg {
+		c := auth.New(server)
+		interval := time.Duration(flow.Interval) * time.Second
+		if interval < time.Second {
+			interval = 5 * time.Second
+		}
+		deadline := time.Now().Add(time.Duration(flow.ExpiresIn) * time.Second)
+		for {
+			if time.Now().After(deadline) {
+				return loginDoneMsg{err: fmt.Errorf("authorization expired"), code: flow.DeviceCode}
+			}
+			res, err := c.PollDevice(context.Background(), flow.DeviceCode)
+			if err != nil {
+				time.Sleep(interval)
+				continue
+			}
+			switch res.Status {
+			case "approved":
+				return loginDoneMsg{cred: &auth.Credential{
+					Server: server, Token: res.AccessToken, User: *res.User,
+					ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+				}, code: flow.DeviceCode}
+			case "expired":
+				return loginDoneMsg{err: fmt.Errorf("authorization expired"), code: flow.DeviceCode}
+			default:
+				time.Sleep(interval)
+			}
+		}
+	}
 }
 
 func parseGoalArgs(args string) (string, []string) {
@@ -1238,6 +1422,14 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 		}
 		if text, ok := ev.Data.(string); ok {
 			a.streaming.raw += text
+			a.streaming.tail += text
+			if i := strings.LastIndexByte(a.streaming.tail, '\n'); i >= 0 {
+				a.streaming.committed += a.streaming.tail[:i+1]
+				a.streaming.tail = a.streaming.tail[i+1:]
+				// Reset the glamour cache so the next refresh re-renders the
+				// (now-larger) committed prefix.
+				a.streaming.cached = ""
+			}
 		}
 	case engine.EvAssistantStart:
 		a.streaming = &streamingMsg{start: time.Now()}
@@ -1325,6 +1517,8 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			a.pendingPerm = &req
 			a.mode = modePermission
 			a.composer.Blur()
+			a.composer.SetPlanMode(a.engine.Perm.IsPlanMode())
+			return a.syncTitle()
 		}
 	case engine.EvAskUser:
 		if data, ok := ev.Data.(map[string]any); ok {
@@ -1335,6 +1529,8 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			a.composer.plain = true
 			a.composer.SetValue("")
 			a.composer.Focus()
+			a.composer.SetPlanMode(a.engine.Perm.IsPlanMode())
+			return a.syncTitle()
 		}
 	case engine.EvEvidence:
 		a.addChip("evidence", fmt.Sprintf("+%s · %s", evidenceShort(ev.Data), time.Now().Format("15:04:05")))
@@ -1373,6 +1569,7 @@ func (a *app) handleEngineEvent(ev engine.Event) tea.Cmd {
 			}
 		}
 		a.addSystem("agent finished — state saved to .astra/")
+		return a.syncTitle()
 	case engine.EvAction:
 		if v, ok := ev.Data.(*core.Action); ok && v != nil {
 			a.addSystem(fmt.Sprintf("→ %s · %s (u=%.2f)", v.Type, v.Description, v.Utility))
@@ -1413,10 +1610,28 @@ func (a *app) View() string {
 	case modeAsk:
 		composerView = a.renderAsk()
 	default:
-		composerView = a.composer.View(a.width - sideW)
+		if a.ignition != nil {
+			composerView = a.ignition.view(a.width-sideW, time.Now())
+		} else {
+			composerView = a.composer.View(a.width - sideW)
+		}
 	}
+	var band strings.Builder
+	if n := a.renderStatusIndicator(); n != "" {
+		band.WriteString(n)
+		band.WriteString("\n")
+	}
+	if nudge := a.renderNudge(); nudge != "" {
+		band.WriteString(nudge)
+		band.WriteString("\n")
+	}
+	if hint := a.renderComposerHint(); hint != "" {
+		band.WriteString(hint)
+		band.WriteString("\n")
+	}
+	band.WriteString(composerView)
 
-	layout := header + "\n" + main + "\n" + composerView + "\n" + footer
+	layout := header + "\n" + main + "\n" + band.String() + "\n" + footer
 	if a.sidebar.visible {
 		side := a.sidebar.View()
 		return lipgloss.JoinHorizontal(lipgloss.Top, layout, side)
@@ -1425,23 +1640,6 @@ func (a *app) View() string {
 }
 
 func (a *app) renderHeader() string {
-	var b strings.Builder
-	b.WriteString(styleDim.Render(">_ "))
-	b.WriteString(styleTitle.Render("Astra Harness"))
-	b.WriteString(styleDim.Render(" (v0.1.0)"))
-	if a.busy {
-		b.WriteString("  ")
-		b.WriteString(a.spinner.View())
-		elapsed := time.Since(a.busyAt).Truncate(time.Second)
-		b.WriteString(styleDim.Render(fmt.Sprintf(" %s", elapsed)))
-	}
-	b.WriteString("  " + styleDim.Render("model:"))
-	b.WriteString(" " + styleEmph.Render(a.engine.Model))
-	if reasoning := a.engine.ReasoningEffort(); reasoning != "" && reasoning != "medium" {
-		b.WriteString(styleDim.Render(" (" + reasoning + ")"))
-	}
-	b.WriteString("  " + styleDim.Render("directory:"))
-	b.WriteString(" " + styleSubtle.Render(headerDir(a.engine.Root)))
 	mode := "ask"
 	if a.engine.Perm.IsPlanMode() {
 		mode = "plan"
@@ -1450,22 +1648,49 @@ func (a *app) renderHeader() string {
 	} else if a.engine.Perm.GetMode() == engine.ModeDeny {
 		mode = "deny"
 	}
-	b.WriteString("  " + styleDim.Render("permissions:"))
-	b.WriteString(" " + styleSubtle.Render(mode))
-	if br := a.engine.Git.BranchOr(""); br != "" {
-		b.WriteString("  " + styleDim.Render("branch:"))
-		b.WriteString(" " + styleSubtle.Render(br))
+	model := a.engine.Model
+	if reasoning := a.engine.ReasoningEffort(); reasoning != "" && reasoning != "medium" {
+		model += " (" + reasoning + ")"
 	}
-	if a.userEmail != "" {
-		b.WriteString("  " + styleDim.Render("acct:"))
-		b.WriteString(" " + styleSubtle.Render(a.userEmail))
+	branch := a.engine.Git.BranchOr("")
+	acct := a.userEmail
+
+	// Codex's session header is a rounded card with one row per attribute.
+	// Build the body and box it in the same border style as other overlays.
+	var b strings.Builder
+	b.WriteString(styleTitle.Render(">_ Astra Harness") + styleDim.Render(" (v0.1.0)") + "\n")
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render("  model:        ") + styleBody.Render(model) + "  " + styleKey.Render("/model to change") + "\n")
+	b.WriteString(styleDim.Render("  directory:    ") + styleBody.Render(formatDirectoryDisplay(a.engine.Root)) + "\n")
+	b.WriteString(styleDim.Render("  permissions:  ") + styleBody.Render(mode))
+	if branch != "" {
+		b.WriteString(styleDim.Render("  branch:") + " " + styleSubtle.Render(branch))
 	}
-	return styleHeaderRow.Render(b.String())
+	if acct != "" {
+		b.WriteString(styleDim.Render("  acct:") + " " + styleSubtle.Render(acct))
+	}
+	b.WriteString("\n")
+	pal := activePalette()
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(pal.GrayLo).
+		Padding(0, 1).
+		Width(a.width - 2).
+		Render(strings.TrimRight(b.String(), "\n"))
 }
 
 // headerDir shortens the working directory for the session header, replacing
 // the user's home prefix with "~" the way Codex's session header does.
 func headerDir(root string) string {
+	return formatDirectoryDisplay(root)
+}
+
+// formatDirectoryDisplay returns the `~`-relative path for status-line
+// segments, mirroring codex-rs status::helpers::format_directory_display.
+func formatDirectoryDisplay(root string) string {
+	if root == "" {
+		return ""
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return root
@@ -1504,34 +1729,26 @@ func (a *app) renderStatusBar() string {
 		left = "? for shortcuts"
 	}
 	if left == "? for shortcuts" && a.engine.Perm.IsPlanMode() {
-		left += " · Plan mode (shift+tab to cycle)"
+		left += " · shift + tab to cycle"
 	}
-	right := strings.Join(a.statusLineSegments(), "  ·  ")
+	segments := a.statusLineSegments()
 	widthAvail := a.widthAvail() - 2
-	leftW := lipgloss.Width(left)
-	rightW := lipgloss.Width(right)
-	pad := widthAvail - leftW - rightW - 1
-	if pad < 1 {
-		pad = 1
-	}
-	// If even pad=1 overflows (e.g. ultra-narrow terminal), trim `left` to fit.
-	if leftW+rightW+1 > widthAvail {
-		maxLeft := widthAvail - rightW - 1
-		if maxLeft < 4 {
-			maxLeft = 4
+	// Codex collapses the statusline from the right: trailing segments drop
+	// off first, then the left message truncates as a last resort.
+	for len(segments) > 0 {
+		right := strings.Join(segments, " · ")
+		if lipgloss.Width(left)+lipgloss.Width(right)+1 <= widthAvail {
+			pad := widthAvail - lipgloss.Width(left) - lipgloss.Width(right) - 1
+			return styleStatusBar.Width(a.widthAvail()).Render(left + strings.Repeat(" ", pad) + right)
 		}
-		if leftW > maxLeft {
-			left = truncate(left, maxLeft)
-			leftW = lipgloss.Width(left)
-		}
+		segments = segments[:len(segments)-1]
 	}
-	// Re-clamp after trimming: truncate() counts runes, not display columns,
-	// so wide characters can still push pad negative (strings.Repeat panics).
-	if pad < 1 {
-		pad = 1
+	// No segment fits: truncate the left message (rune-based truncation can
+	// still overflow with wide glyphs, but never panics — styleWidth only pads).
+	if lipgloss.Width(left) > widthAvail-1 {
+		left = truncate(left, widthAvail-1)
 	}
-	line := left + strings.Repeat(" ", pad) + right
-	return styleStatusBar.Width(a.widthAvail()).Render(line)
+	return styleStatusBar.Width(a.widthAvail()).Render(left)
 }
 
 // statusLineSegments renders the configured Codex-compatible footer items.
@@ -1560,7 +1777,7 @@ func (a *app) statusLineSegments() []string {
 				out = append(out, reasoning)
 			}
 		case "current-dir", "project-name":
-			out = append(out, filepath.Base(e.Root))
+			out = append(out, formatDirectoryDisplay(e.Root))
 		case "git-branch":
 			if br := e.Git.BranchOr(""); br != "" {
 				out = append(out, br)
@@ -1574,11 +1791,19 @@ func (a *app) statusLineSegments() []string {
 		case "approval-mode":
 			out = append(out, e.Perm.GetMode())
 		case "permissions":
-			mode := e.Perm.GetMode()
 			if e.Perm.IsPlanMode() {
-				mode = "plan"
+				// Codex renders the plan-mode pill as a magenta-on-bg chip
+				// appended to the footer rather than a colored segment.
+				pal := activePalette()
+				out = append(out, lipgloss.NewStyle().
+					Background(pal.Magenta).
+					Foreground(pal.Bg0).
+					Bold(true).
+					Padding(0, 1).
+					Render(" plan "))
+			} else {
+				out = append(out, e.Perm.GetMode())
 			}
-			out = append(out, mode)
 		case "context-used":
 			if max := e.Config.MaxContextTokens; max > 0 && total > 0 {
 				pct := total * 100 / max
@@ -1594,14 +1819,14 @@ func (a *app) statusLineSegments() []string {
 			}
 		case "context-window-size":
 			if max := e.Config.MaxContextTokens; max > 0 {
-				out = append(out, fmt.Sprintf("%d tok window", max))
+				out = append(out, fmt.Sprintf("%s window", formatTokensCompact(max)))
 			}
 		case "used-tokens":
-			out = append(out, fmt.Sprintf("%d tok", total))
+			out = append(out, fmt.Sprintf("%s tok", formatTokensCompact(total)))
 		case "total-input-tokens":
-			out = append(out, fmt.Sprintf("%d in", usage.InputTokens))
+			out = append(out, fmt.Sprintf("%s in", formatTokensCompact(usage.InputTokens)))
 		case "total-output-tokens":
-			out = append(out, fmt.Sprintf("%d out", usage.OutputTokens))
+			out = append(out, fmt.Sprintf("%s out", formatTokensCompact(usage.OutputTokens)))
 		case "estimated-cost":
 			if cost > 0 {
 				out = append(out, fmt.Sprintf("$%.4f", cost))
@@ -1609,7 +1834,7 @@ func (a *app) statusLineSegments() []string {
 		case "session-id":
 			out = append(out, e.SessionID())
 		case "thread-title":
-			out = append(out, filepath.Base(e.Root))
+			out = append(out, formatDirectoryDisplay(e.Root))
 		case "task-progress":
 			if n := len(e.Store.State.Unknowns); n > 0 {
 				out = append(out, fmt.Sprintf("%d tasks", n))
@@ -1655,14 +1880,21 @@ func (a *app) renderPermission() string {
 	}
 	b.WriteString("\n")
 	// Codex-style option list: the recommended action is pre-selected with
-	// "›", and every option carries its direct key shortcut.
+	// "›", every option carries its direct key shortcut, and the wording
+	// matches codex-rs approval_overlay.rs exec_options.
 	b.WriteString("  " + styleKey.Render("›") + " 1. Yes, proceed (" + styleKey.Render(allowKey) + ")\n")
-	b.WriteString("     2. Yes, allow for this session (" + styleKey.Render(alwaysKey) + ")\n")
-	b.WriteString("     3. No, deny once (" + styleKey.Render(denyKey) + " / esc)\n")
-	b.WriteString("     4. No, deny for this session (" + styleKey.Render(neverKey) + ")\n")
+	b.WriteString("     2. Yes, and don't ask again for this command in this session (" + styleKey.Render(alwaysKey) + ")\n")
+	b.WriteString("     3. No, continue without running it (" + styleKey.Render(denyKey) + ")\n")
+	b.WriteString("     4. No, and don't ask again for this command in this session (" + styleKey.Render(neverKey) + ")\n")
 	b.WriteString("\n")
-	b.WriteString("  " + styleDim.Render("Press y/a/n/N to choose · esc to cancel"))
+	b.WriteString("  " + styleDim.Render("Press 1/2/3/4 to choose · esc to reply instead"))
 	return b.String()
+}
+
+// styleKeyRenderEsc returns the styled "esc" hint used in the permission
+// overlay so all four option lines share the same rendering for the key.
+func styleKeyRenderEsc(s string) string {
+	return styleKey.Render(s)
 }
 
 func (a *app) renderAsk() string {
@@ -1670,14 +1902,15 @@ func (a *app) renderAsk() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("❓ Question from agent") + "\n")
+	b.WriteString(styleTitle.Render("Question from agent") + "\n")
 	b.WriteString(a.pendingAsk.question + "\n")
 	b.WriteString(styleDim.Render("type an answer and press enter · esc to cancel") + "\n")
 	return stylePanel.Width(a.width-2).Render(b.String()) + "\n" + a.composer.View(a.width)
 }
 
 func (a *app) viewportHeight() int {
-	h := a.height - 6
+	// Header (multi-line card), composer (~3 lines incl. band hint), status bar.
+	h := a.height - a.headerHeight - 5
 	if h < 5 {
 		return 5
 	}
@@ -1695,7 +1928,7 @@ func (a *app) refreshViewport() {
 		}
 	}
 	if a.streaming != nil {
-		parts = append(parts, a.renderAssistant(a.streaming.raw, time.Since(a.streaming.start)))
+		parts = append(parts, a.renderAssistantStreaming())
 	}
 	a.vp.SetContent(strings.Join(parts, "\n"))
 	if a.atBottom {
@@ -1783,6 +2016,54 @@ func (a *app) renderAssistant(md string, dur time.Duration) string {
 	return b.String()
 }
 
+// renderAssistantStreaming renders the in-flight assistant turn with an
+// animated bullet (shimmering • on truecolor, blinking on ANSI, static
+// under reduced motion), mirroring Codex's live cell presentation. The
+// committed prefix (everything up to the last newline) is glamour-cached
+// and only re-rendered when a new line is committed; the trailing partial
+// line is re-rendered every frame.
+func (a *app) renderAssistantStreaming() string {
+	s := a.streaming
+	if s == nil {
+		return ""
+	}
+	committed := s.committed
+	tail := s.tail
+	if committed != "" && s.cached == "" {
+		s.cached = renderMarkdown(committed)
+	}
+	var body string
+	switch {
+	case s.cached != "" && tail != "":
+		body = s.cached + "\n" + renderMarkdown(tail)
+	case s.cached != "":
+		body = s.cached
+	default:
+		body = renderMarkdown(s.raw)
+	}
+	if body == "" {
+		return activityBullet(time.Now()) + " " + styleDim.Render("…")
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	var b strings.Builder
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			l = ""
+		} else {
+			l = strings.TrimRight(l, " ")
+		}
+		if i == 0 {
+			b.WriteString(activityBullet(time.Now()) + " " + l)
+		} else {
+			b.WriteString("  " + l)
+		}
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 // renderToolStreaming renders a tool cell that is still producing output,
 // Codex-style:
 //
@@ -1840,7 +2121,7 @@ func (a *app) renderTool(name string, success bool, output string) string {
 //     └ file1
 //     file2
 func (a *app) renderBash(cmd, output string, ok bool, exitCode string, dur time.Duration) string {
-	return codexUserShellCell(cmd, output, a.widthAvail()-2)
+	return codexUserShellCell(cmd, output, ok, a.widthAvail()-2)
 }
 
 func (a *app) addSystem(text string) {
@@ -1871,6 +2152,168 @@ func (a *app) addWelcomeHints() {
 		"  enter send · alt+enter newline · ctrl+c stop · ctrl+b sidebar · ctrl+k palette · ctrl+l clear · ctrl+t new · ctrl+u/d scroll · ? help")
 	a.addSystem(styleDim.Render("Composer shortcuts:") +
 		"  / commands · @ files · ! shell · alt+enter newline · ↑↓ history")
+}
+
+// addWelcome prints the Codex-style welcome block: a bold brand line, the
+// session identity, index status, and keybinding hints.
+func (a *app) addWelcome() {
+	a.addSystem(styleTitle.Render("Welcome to Astra") + styleDim.Render(", a knowledge-driven coding agent"))
+	a.addSystem(fmt.Sprintf("%s · %s/%s · branch %s",
+		filepath.Base(a.root), a.engine.ProviderID(), a.engine.Model, a.engine.Git.BranchOr("-")))
+	a.addSystem(a.engine.Index.Stats())
+	a.addWelcomeHints()
+}
+
+// nudgeVisible mirrors Codex's plan-mode nudge policy (chatwidget.rs
+// should_show_plan_mode_nudge): the draft contains the standalone word
+// "plan", plan mode is off, the draft is not a /command or !shell line,
+// and the nudge was not dismissed for this thread.
+func (a *app) nudgeVisible() bool {
+	if a.planNudgeDismissed || a.engine.Perm.IsPlanMode() || a.busy || a.mode != modeChat {
+		return false
+	}
+	text := a.composer.Value()
+	trimmed := strings.TrimLeft(text, " ")
+	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "!") {
+		return false
+	}
+	return containsPlanKeyword(text)
+}
+
+// containsPlanKeyword matches the standalone word "plan" (word-split on
+// non-alphanumerics except "_"), mirroring codex-rs contains_plan_keyword.
+func containsPlanKeyword(text string) bool {
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+	}) {
+		if strings.EqualFold(word, "plan") {
+			return true
+		}
+	}
+	return false
+}
+
+// renderStatusIndicator builds the "Working (Ns • esc to interrupt)" row
+// that sits above the composer while the agent is busy, mirroring
+//codex-rs status_indicator_widget.rs. The label shimmers when motion is
+// enabled; renders as a static accent otherwise. Empty when the agent is
+// idle.
+func (a *app) renderStatusIndicator() string {
+	if !a.busy {
+		return ""
+	}
+	var label string
+	if motionEnabled() {
+		label = shimmerRender("Working", time.Now())
+	} else {
+		label = styleEmph.Render("Working")
+	}
+	elapsed := fmtElapsedCompact(time.Since(a.busyAt))
+	hint := a.engine.KeymapBinding("interrupt_or_quit")
+	if hint == "" {
+		hint = "esc"
+	}
+	return label + styleDim.Render(fmt.Sprintf("  (%s · %s to interrupt)", elapsed, hint))
+}
+
+// fmtElapsedCompact formats durations Codex-style: "5s", "1m 30s",
+// "1h 02m 30s".
+func fmtElapsedCompact(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	if d < time.Hour {
+		m := int(d / time.Minute)
+		s := int((d % time.Minute) / time.Second)
+		return fmt.Sprintf("%dm %02ds", m, s)
+	}
+	h := int(d / time.Hour)
+	m := int((d % time.Hour) / time.Minute)
+	s := int((d % time.Minute) / time.Second)
+	return fmt.Sprintf("%dh %02dm %02ds", h, m, s)
+}
+
+// renderComposerHint builds the single-line hint strip that sits between
+// the viewport and the composer, mirroring codex-rs footer.rs footer_from_props:
+//   "? for shortcuts" while idle (with plan-mode / queue overrides)
+//   "tab to queue message" while the agent is busy
+//   "esc cancel · enter submit" while the agent is asking the user
+func (a *app) renderComposerHint() string {
+	if a.mode == modePermission {
+		return styleDim.Render("choose an option above · esc to cancel")
+	}
+	if a.mode == modeAsk {
+		return styleDim.Render("esc cancel · enter submit")
+	}
+	if a.composer.search {
+		return "" // viewSearch already shows its own status row
+	}
+	if a.composer.IsBash() {
+		return styleDim.Render("! shell mode · enter run · esc exit")
+	}
+	hint := "? for shortcuts"
+	if a.busy {
+		hint = "tab to queue message"
+	}
+	return styleDim.Render(hint)
+}
+
+// renderNudge renders the one-line plan-mode nudge that sits above the
+// composer, mirroring Codex's footer replacement:
+//
+//	Create a plan?  shift + tab use Plan mode   esc dismiss
+func (a *app) renderNudge() string {
+	if !a.nudgeVisible() {
+		return ""
+	}
+	return styleValue.Render("Create a plan?") + styleDim.Render("  ") +
+		styleKey.Render("shift + tab") + styleDim.Render(" use Plan mode   ") +
+		styleKey.Render("esc") + styleDim.Render(" dismiss")
+}
+
+// cyclePermissionMode implements the Codex shift+tab behavior: ask → plan →
+// allow → deny → ask.
+func (a *app) cyclePermissionMode() {
+	order := []string{engine.ModeAsk, "plan", engine.ModeAllow, engine.ModeDeny}
+	cur := a.engine.Perm.GetMode()
+	if a.engine.Perm.IsPlanMode() {
+		cur = "plan"
+	}
+	next := engine.ModeAsk
+	for i, m := range order {
+		if m == cur {
+			next = order[(i+1)%len(order)]
+			break
+		}
+	}
+	if next == "plan" {
+		a.engine.Perm.SetPlanMode(true)
+		a.engine.Perm.SetMode(engine.ModeAsk)
+	} else {
+		a.engine.Perm.SetPlanMode(false)
+		a.engine.Perm.SetMode(next)
+	}
+	a.composer.SetPlanMode(next == "plan")
+	a.planNudgeDismissed = false
+	a.addSystem("permission mode: " + next)
+}
+
+// syncTitle emits a terminal-title update mirroring Codex's title behavior:
+// an alternating "[ ! ] Action Required" prefix while a permission or ask
+// modal is pending, otherwise the plain session title.
+func (a *app) syncTitle() tea.Cmd {
+	title := "Astra · " + filepath.Base(a.root)
+	if a.mode == modePermission || a.mode == modeAsk {
+		prefix := "[ ! ] Action Required"
+		if motionEnabled() && (time.Now().UnixMilli()/600)%2 == 1 {
+			prefix = "[ . ] Action Required"
+		}
+		title = prefix + " — " + title
+	}
+	return tea.SetWindowTitle(title)
 }
 
 // Helpers --------------------------------------------------------------
