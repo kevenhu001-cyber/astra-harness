@@ -31,6 +31,14 @@ type Options struct {
 	CookieSecure bool
 	// SessionTTL overrides the default 30-day session lifetime.
 	SessionTTL time.Duration
+	// CookiePath scopes the session cookie to a URL path. It defaults to "/"
+	// (sent on every path of the host). To keep the auth session cookie from
+	// being sent to an unrelated path on the same host — e.g. the installer
+	// served at https://astracode.topodrive.top/ — scope it to a path that is
+	// NOT a prefix of that location (a cookie Path can only narrow, never
+	// exclude, so the auth site and /astracode/ must live under distinct,
+	// non-overlapping paths or different subdomains).
+	CookiePath string
 }
 
 // Server is the auth HTTP server.
@@ -48,6 +56,9 @@ func New(store *Store, mailer Mailer, opts Options) *Server {
 	}
 	if opts.SessionTTL <= 0 {
 		opts.SessionTTL = sessionTTL
+	}
+	if opts.CookiePath == "" {
+		opts.CookiePath = "/"
 	}
 	return &Server{store: store, mailer: mailer, opts: opts}
 }
@@ -210,7 +221,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, userID string) error {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sid",
 		Value:    token,
-		Path:     "/",
+		Path:     s.opts.CookiePath,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   s.opts.CookieSecure,
@@ -220,7 +231,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, userID string) error {
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "sid", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "sid", Value: "", Path: s.opts.CookiePath, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 }
 
 // --- registration (Socrates mechanism) ---
